@@ -239,3 +239,8 @@ alter table card_payments add column if not exists card_adjust numeric not null 
 
 -- Ekstre ayı (migrations/009)
 alter table card_payments add column if not exists statement_month text;
+
+-- Kart limiti (migrations/010)
+alter table finances add column if not exists card_limit numeric not null default 0;
+alter table finances add column if not exists card_used numeric not null default 0;
+alter table finances add column if not exists card_used_at date;

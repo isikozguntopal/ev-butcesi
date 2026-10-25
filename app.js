@@ -425,6 +425,9 @@ function MonthScreen({ ctx }) {
   const prevM = addM(m, -1);
   const stPrev = statementOf(rows, uid, prevM);
   const [cardEqOpen, setCardEqOpen] = useState(null);
+  const [limitOpen, setLimitOpen] = useState(false);
+  const cardLimit = Number(fin.card_limit) || 0;
+  const cardUsed = Number(fin.card_used) || 0;
   const paidT = cardAmt + sumBy(counted.filter(i => isPaid(i, m)), i => mine(i, i.monthly_amount))
     + sumBy(fixedCounted.filter(f => isPaid(f, m)), f => mine(f, f.amount))
     + sumBy(expsCounted.filter(e => isPaid(e, m)), e => mine(e, e.amount));
@@ -506,6 +509,8 @@ function MonthScreen({ ctx }) {
         <div class="row"><span>Kartta bu ay harcadığın</span><b>${tl(cardSpend)}</b></div>
         <div class="row"><span>${monthName(prevM)} ekstresi, kalan borç</span><b class=${stPrev.debt > 0 ? 'warn' : 'pos'}>${tl(stPrev.debt)}</b></div>
         <div class="row"><span></span><button class="link small" onClick=${() => setCardEqOpen(prevM)}>⚖️ ${monthName(prevM)} ekstresini eşitle</button></div>
+        ${cardLimit > 0 && html`<div class="row"><span>Kart limiti: ${tl(cardLimit)}<small class="muted"> · kullanılan ${tl(cardUsed)}${fin.card_used_at ? ` (${new Date(fin.card_used_at).toLocaleDateString('tr-TR', { day: 'numeric', month: 'short' })})` : ''}</small></span><b class=${cardLimit - cardUsed < cardLimit * 0.2 ? 'warn' : 'pos'}>${tl(cardLimit - cardUsed)} kalan</b></div>`}
+        <div class="row"><span></span><button class="link small" onClick=${() => setLimitOpen(true)}>💳 Kart limitini güncelle</button></div>
       </div>
     </div>
 
@@ -557,6 +562,7 @@ function MonthScreen({ ctx }) {
     <button class="fab" onClick=${() => setForm({ kind: 'expense' })} aria-label="Ekle">+</button>
     ${form && html`<${ItemForm} ctx=${ctx} ...${form} month=${m} onClose=${() => setForm(null)} />`}
     ${cardOpen && html`<${CardSheet} ctx=${ctx} month=${m} onClose=${() => setCardOpen(false)} />`}
+    ${limitOpen && html`<${CardLimitSheet} ctx=${ctx} onClose=${() => setLimitOpen(false)} />`}
     ${cardEqOpen && html`<${CardEqSheet} ctx=${ctx} statement=${cardEqOpen} onClose=${() => setCardEqOpen(null)} />`}
     ${taksitOpen && html`<${TaksitSheet} ctx=${ctx} onAdd=${() => setForm({ kind: 'installment' })} onClose=${() => setTaksitOpen(false)} />`}
     ${balOpen && html`<${BalanceSheet} ctx=${ctx} expected=${income - paidT} onClose=${() => setBalOpen(false)} />`}`;
@@ -601,6 +607,37 @@ function BalanceSheet({ ctx, expected, onClose }) {
           ${!!diff && html`<button class="primary" disabled=${busy} onClick=${save}>Eşitle</button>`}
         </div>`}
       <p class="hint">Sadece sen görürsün. Yanlış eklersen Harcamalar'dan dokunup silebilirsin.</p>
+    <//>`;
+}
+
+// ---------- Kart limiti ----------
+
+/** Bankanın uygulamasındaki limit bilgisi: limit ve kullanılan tutar. Ayda bir (ör. 5'inde) girmek yeterli. */
+function CardLimitSheet({ ctx, onClose }) {
+  const { fin, saveFin } = ctx;
+  const [limit, setLimit] = useState(Number(fin.card_limit) || 0);
+  const [used, setUsed] = useState(Number(fin.card_used) || 0);
+  const [at, setAt] = useState(fin.card_used_at || today());
+  const [busy, setBusy] = useState(false);
+  async function save() {
+    if (busy || !(limit > 0)) return;
+    setBusy(true);
+    await saveFin({ ...fin, card_limit: limit, card_used: used, card_used_at: at });
+    onClose();
+  }
+  return html`
+    <${Sheet} title="💳 Kart limiti" onClose=${onClose}
+      right=${html`<button class="link strong" disabled=${busy || !(limit > 0)} onClick=${save}>Kaydet</button>`}>
+      <div class="card form">
+        <label class="field"><span>Kart limiti</span><${MoneyInput} value=${limit} onInput=${setLimit} /></label>
+        <label class="field"><span>Kullanılan limit<small>Bankanın uygulamasında yazan</small></span><${MoneyInput} value=${used} onInput=${setUsed} /></label>
+        <label class="field"><span>Bu bilgi tarihi</span><input type="date" value=${at} onInput=${e => setAt(e.target.value || at)} onChange=${e => setAt(e.target.value || at)} /></label>
+      </div>
+      <div class="card hero center-text">
+        <div class="muted">Kalan limit</div>
+        <div class="big pos">${tl(Math.max(0, limit - used))}</div>
+      </div>
+      <p class="hint">Ayın 5'inde bankadaki iki rakamı yazman yeterli. Sadece sen görürsün.</p>
     <//>`;
 }
 
