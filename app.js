@@ -1,4 +1,4 @@
-import { html, render, useState, useEffect } from 'https://unpkg.com/htm@3.1.1/preact/standalone.module.js';
+import { html, render, useState, useEffect, useRef } from 'https://unpkg.com/htm@3.1.1/preact/standalone.module.js';
 import { api, DEMO, SHOW, TABLES, enterShowMode, exitShowMode, loadSample } from './data.js';
 import { DEFAULT_SHOPPING, CATEGORIES } from './defaults.js';
 import { Buddy, Walker, Party, celebrate, dailyFace, faceFor } from './animals.js';
@@ -11,9 +11,9 @@ const usdFmt = new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'US
 const tl = v => tlFmt.format(Number(v) || 0);
 const usd = v => usdFmt.format(Number(v) || 0);
 
-/** "1.250,50", "1250,5", "4.900" (binlik) ve "1250.5" girişlerini okur */
+/** "1.250,50", "1250,5", "4.900" (binlik), "₺2.500 TL" ve "1250.5" girişlerini okur */
 function parseAmount(s) {
-  let t = String(s || '').replace(/\s/g, '');
+  let t = String(s || '').replace(/[^\d.,]/g, '');
   if (t.includes(',')) t = t.replace(/\./g, '').replace(',', '.');
   else if (/^\d{1,3}(\.\d{3})+$/.test(t)) t = t.replace(/\./g, '');
   const n = parseFloat(t);
@@ -90,10 +90,11 @@ function Sheet({ title, onClose, right, children }) {
 function MoneyInput({ value, onInput, suffix = '₺', placeholder = '0' }) {
   const [text, setText] = useState(plain(value));
   useEffect(() => { if (parseAmount(text) !== Number(value || 0)) setText(plain(value)); }, [value]);
+  const update = e => { setText(e.target.value); onInput(parseAmount(e.target.value)); };
   return html`
     <span class="money">
-      <input inputmode="decimal" placeholder=${placeholder} value=${text}
-        onInput=${e => { setText(e.target.value); onInput(parseAmount(e.target.value)); }} />
+      <input inputmode="decimal" placeholder=${placeholder} value=${text} data-amount
+        onInput=${update} onChange=${update} onBlur=${update} />
       <span class="muted">${suffix}</span>
     </span>`;
 }
@@ -149,19 +150,36 @@ function ItemForm({ ctx, kind: initialKind, item, preset, month, onClose, onSave
   const [split, setSplit] = useState(src.split || 'half');
   const [payer, setPayer] = useState(src.payer_id || uid);
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const formRef = useRef(null);
 
+  // Son taksit ilk taksitten önceye düşerse (ör. Ocak seçilip yıl değişmemişse) bir sonraki yıla al
+  const pickLast = e => {
+    let v = e.target.value || last;
+    while (v < first && diffM(v, first) < 24) v = addM(v, 12);
+    setLast(v);
+    setErr('');
+  };
   const count = diffM(first, last) + 1;
   const left = last < thisMonth() ? 0 : diffM(first > thisMonth() ? first : thisMonth(), last) + 1;
-  const valid = name.trim() && amount > 0 && (kind !== 'installment' || count >= 1);
   const table = KIND_TABLE[kind];
 
   async function save() {
-    if (!valid || busy) return;
+    if (busy) return;
+    // iPhone'da bazı girişler state'e geç düşebiliyor; son hali ekrandan oku
+    const el = formRef.current;
+    const nm = (el?.querySelector('[data-name]')?.value ?? name).trim();
+    const amt = parseAmount(el?.querySelector('[data-amount]')?.value ?? '') || amount;
+    if (!nm) return setErr('Ne aldığını yaz');
+    if (!(amt > 0)) return setErr(kind === 'installment' ? 'Aylık taksit tutarını yaz' : 'Tutarı yaz');
+    if (kind === 'installment' && count < 1) return setErr('Son taksit, ilk taksitten önce olamaz');
+    setErr('');
     setBusy(true);
-    const row = { name: name.trim(), shared, split: shared ? split : 'half', payer_id: shared ? payer : uid };
-    if (kind === 'expense') Object.assign(row, { amount, date });
-    if (kind === 'fixed') Object.assign(row, { amount });
-    if (kind === 'installment') Object.assign(row, { monthly_amount: amount, first_month: `${first}-01`, last_month: `${last}-01` });
+    const amount_ = amt;
+    const row = { name: nm, shared, split: shared ? split : 'half', payer_id: shared ? payer : uid };
+    if (kind === 'expense') Object.assign(row, { amount: amount_, date });
+    if (kind === 'fixed') Object.assign(row, { amount: amount_ });
+    if (kind === 'installment') Object.assign(row, { monthly_amount: amount_, first_month: `${first}-01`, last_month: `${last}-01` });
     const ok = item ? await actions.patch(table, item.id, row) : await actions.add(table, row);
     if (ok !== false) {
       if (onSaved) await onSaved();
@@ -179,17 +197,19 @@ function ItemForm({ ctx, kind: initialKind, item, preset, month, onClose, onSave
   const titles = { expense: 'Harcama', installment: 'Taksit', fixed: 'Aylık Ödeme' };
   return html`
     <${Sheet} title=${(item ? '' : 'Yeni ') + titles[kind]} onClose=${onClose}
-      right=${html`<button class="link strong" disabled=${!valid || busy} onClick=${save}>Kaydet</button>`}>
+      right=${html`<button class="link strong" disabled=${busy} onClick=${save}>Kaydet</button>`}>
+      ${err && html`<p class="error">${err}</p>`}
       ${!item && html`<${Seg} value=${kind} onChange=${setKind}
         options=${[['expense', 'Peşin'], ['installment', 'Taksitli'], ['fixed', 'Her ay']]} />`}
-      <div class="card form">
-        <label class="field"><input placeholder=${kind === 'fixed' ? 'Ne için? (ör. Kira)' : 'Ne aldın?'} value=${name} onInput=${e => setName(e.target.value)} /></label>
-        <label class="field"><span>${kind === 'installment' ? 'Aylık taksit' : 'Tutar'}</span><${MoneyInput} value=${amount} onInput=${setAmount} /></label>
+      <div class="card form" ref=${formRef}>
+        <label class="field"><input data-name placeholder=${kind === 'fixed' ? 'Ne için? (ör. Kira)' : 'Ne aldın?'} value=${name}
+          onInput=${e => { setName(e.target.value); setErr(''); }} onChange=${e => setName(e.target.value)} /></label>
+        <label class="field"><span>${kind === 'installment' ? 'Aylık taksit' : 'Tutar'}</span><${MoneyInput} value=${amount} onInput=${v => { setAmount(v); setErr(''); }} /></label>
         ${kind === 'expense' && html`
-          <label class="field"><span>Tarih</span><input type="date" value=${date} onInput=${e => setDate(e.target.value)} /></label>`}
+          <label class="field"><span>Tarih</span><input type="date" value=${date} onInput=${e => setDate(e.target.value || date)} onChange=${e => setDate(e.target.value || date)} /></label>`}
         ${kind === 'installment' && html`
-          <label class="field"><span>İlk taksit</span><input type="month" value=${first} onInput=${e => setFirst(e.target.value || first)} /></label>
-          <label class="field"><span>Son taksit</span><input type="month" value=${last} onInput=${e => setLast(e.target.value || last)} /></label>`}
+          <label class="field"><span>İlk taksit</span><input type="month" value=${first} onInput=${e => setFirst(e.target.value || first)} onChange=${e => setFirst(e.target.value || first)} /></label>
+          <label class="field"><span>Son taksit</span><input type="month" value=${last} onInput=${pickLast} onChange=${pickLast} /></label>`}
       </div>
       ${kind === 'installment' && html`
         <p class="hint">${count < 1 ? 'Son taksit, ilk taksitten önce olamaz.'
@@ -469,7 +489,9 @@ function WishForm({ ctx, item, onClose }) {
   const [month, setMonth] = useState(mk(item?.target_month) || '');
   const [note, setNote] = useState(item?.note || '');
 
+  const [err, setErr] = useState('');
   async function save() {
+    if (!name.trim()) return setErr('Ne alacağınızı yazın');
     const row = { name: name.trim(), price, target_month: month ? `${month}-01` : null, note: note.trim() || null };
     const ok = item ? await ctx.actions.patch('wishlist', item.id, row) : await ctx.actions.add('wishlist', row);
     if (ok !== false) onClose();
@@ -482,11 +504,12 @@ function WishForm({ ctx, item, onClose }) {
 
   return html`
     <${Sheet} title=${item ? 'Düzenle' : 'Alacağımız Şey'} onClose=${onClose}
-      right=${html`<button class="link strong" disabled=${!name.trim()} onClick=${save}>Kaydet</button>`}>
+      right=${html`<button class="link strong" onClick=${save}>Kaydet</button>`}>
+      ${err && html`<p class="error">${err}</p>`}
       <div class="card form">
-        <label class="field"><input placeholder="Ne? (ör. Çekyat, Dresuar, Kahvelik)" value=${name} onInput=${e => setName(e.target.value)} /></label>
+        <label class="field"><input placeholder="Ne? (ör. Kitaplık, Halı)" value=${name} onInput=${e => { setName(e.target.value); setErr(''); }} onChange=${e => setName(e.target.value)} /></label>
         <label class="field"><span>Tahmini fiyat</span><${MoneyInput} value=${price} onInput=${setPrice} /></label>
-        <label class="field"><span>Ne zaman?</span><input type="month" value=${month} onInput=${e => setMonth(e.target.value)} /></label>
+        <label class="field"><span>Ne zaman?</span><input type="month" value=${month} onInput=${e => setMonth(e.target.value)} onChange=${e => setMonth(e.target.value)} /></label>
         <label class="field"><input placeholder="Not (renk, ölçü, link…)" value=${note} onInput=${e => setNote(e.target.value)} /></label>
       </div>
       ${month && html`<button class="link small" onClick=${() => setMonth('')}>Tarihi kaldır</button>`}

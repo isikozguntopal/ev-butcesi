@@ -1,5 +1,5 @@
 // Önce ağ, olmazsa önbellek: güncellemeler hemen gelir, internet yokken uygulama yine açılır.
-const CACHE = 'aile-butcesi-v3';
+const CACHE = 'aile-butcesi-v4';
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
@@ -8,7 +8,8 @@ self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET' || req.url.includes('supabase.co')) return;
   e.respondWith(
-    fetch(req)
+    // Tarayıcı önbelleğini atla: güncelleme yayınlanınca telefonlar hemen yeni sürümü alır
+    fetch(req, { cache: 'no-cache' })
       .then(res => {
         if (res.ok) {
           const copy = res.clone();
