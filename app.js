@@ -83,16 +83,6 @@ const sumBy = (arr, f) => arr.reduce((s, x) => s + f(x), 0);
 
 /** O ay için kendi kredi kartı ödeme kaydım */
 const cardFor = (rows, uid, m) => rows.card_payments.find(c => c.owner_id === uid && c.month === m);
-/** Ödeme hangi ekstreye ait: ekstre ayı (yoksa ödeme ayı) */
-const stmtOf = c => c.statement_month || c.month;
-/** Bir kart ekstresinin durumu. spend: o aya tarihli kartlı harcamalar; total: bankadaki ekstre toplamı; debt: kalan borç */
-function statementOf(rows, uid, S) {
-  const spend = sumBy(cardItems(rows, uid, S), x => x.amount);
-  const rs = (rows.card_payments || []).filter(c => c.owner_id === uid && stmtOf(c) === S);
-  const adjust = sumBy(rs, c => Number(c.card_adjust) || 0);
-  const paid = sumBy(rs, c => Number(c.amount) || 0);
-  return { spend, adjust, paid, total: spend + adjust, debt: spend + adjust - paid };
-}
 /** O aya devredilen nakit bakiye (manuel karar; 0 = devretme) */
 const carryFor = (rows, uid, m) => (rows.carryovers || []).find(c => c.owner_id === uid && c.month === m);
 /** Bir ayın nakit bakiyesi (devir dahil). Ekim 2026 öncesi veriler güvenilir değil, hesaba katılmaz. */
@@ -422,12 +412,10 @@ function MonthScreen({ ctx }) {
   const total = cardAmt + instT + fixT + expT;
   // Kart harcaması: kartta bu ay yapılan tüm harcamalar (tam tutar). Nakit bakiyeden düşmez; kart ödemesiyle borçtan düşer.
   const cardSpend = sumBy(cardItems(rows, uid, m), x => x.amount);
-  const prevM = addM(m, -1);
-  const stPrev = statementOf(rows, uid, prevM);
-  const [cardEqOpen, setCardEqOpen] = useState(null);
   const [limitOpen, setLimitOpen] = useState(false);
   const cardLimit = Number(fin.card_limit) || 0;
   const cardUsed = Number(fin.card_used) || 0;
+  const cardRemain = Math.max(0, (Number(fin.card_debt) || 0) - cardAmt);
   const paidT = cardAmt + sumBy(counted.filter(i => isPaid(i, m)), i => mine(i, i.monthly_amount))
     + sumBy(fixedCounted.filter(f => isPaid(f, m)), f => mine(f, f.amount))
     + sumBy(expsCounted.filter(e => isPaid(e, m)), e => mine(e, e.amount));
@@ -507,10 +495,9 @@ function MonthScreen({ ctx }) {
         <div class="row"><span>Henüz ödenmedi</span><b class="warn">${tl(total - paidT)}</b></div>
         <div class="row"><span>Bu ay kart ödemesi</span><b>${card ? tl(cardAmt) : html`<span class="warn">Girilmedi</span>`}</b></div>
         <div class="row"><span>Kartta bu ay harcadığın</span><b>${tl(cardSpend)}</b></div>
-        <div class="row"><span>${monthName(prevM)} ekstresi, kalan borç</span><b class=${stPrev.debt > 0 ? 'warn' : 'pos'}>${tl(stPrev.debt)}</b></div>
-        <div class="row"><span></span><button class="link small" onClick=${() => setCardEqOpen(prevM)}>⚖️ ${monthName(prevM)} ekstresini eşitle</button></div>
+        <div class="row"><span>Kart borcu, kalan (bankadan)</span><b class=${cardRemain > 0 ? 'warn' : 'pos'}>${tl(cardRemain)}</b></div>
         ${cardLimit > 0 && html`<div class="row"><span>Kart limiti: ${tl(cardLimit)}<small class="muted"> · kullanılan ${tl(cardUsed)}${fin.card_used_at ? ` (${new Date(fin.card_used_at).toLocaleDateString('tr-TR', { day: 'numeric', month: 'short' })})` : ''}</small></span><b class=${cardLimit - cardUsed < cardLimit * 0.2 ? 'warn' : 'pos'}>${tl(cardLimit - cardUsed)} kalan</b></div>`}
-        <div class="row"><span></span><button class="link small" onClick=${() => setLimitOpen(true)}>💳 Kart limitini güncelle</button></div>
+        <div class="row"><span></span><button class="link small" onClick=${() => setLimitOpen(true)}>💳 Kart bilgilerini güncelle</button></div>
       </div>
     </div>
 
@@ -563,7 +550,6 @@ function MonthScreen({ ctx }) {
     ${form && html`<${ItemForm} ctx=${ctx} ...${form} month=${m} onClose=${() => setForm(null)} />`}
     ${cardOpen && html`<${CardSheet} ctx=${ctx} month=${m} onClose=${() => setCardOpen(false)} />`}
     ${limitOpen && html`<${CardLimitSheet} ctx=${ctx} onClose=${() => setLimitOpen(false)} />`}
-    ${cardEqOpen && html`<${CardEqSheet} ctx=${ctx} statement=${cardEqOpen} onClose=${() => setCardEqOpen(null)} />`}
     ${taksitOpen && html`<${TaksitSheet} ctx=${ctx} onAdd=${() => setForm({ kind: 'installment' })} onClose=${() => setTaksitOpen(false)} />`}
     ${balOpen && html`<${BalanceSheet} ctx=${ctx} expected=${income - paidT} onClose=${() => setBalOpen(false)} />`}`;
 }
@@ -617,70 +603,29 @@ function CardLimitSheet({ ctx, onClose }) {
   const { fin, saveFin } = ctx;
   const [limit, setLimit] = useState(Number(fin.card_limit) || 0);
   const [used, setUsed] = useState(Number(fin.card_used) || 0);
+  const [debt, setDebt] = useState(Number(fin.card_debt) || 0);
   const [at, setAt] = useState(fin.card_used_at || today());
   const [busy, setBusy] = useState(false);
   async function save() {
     if (busy || !(limit > 0)) return;
     setBusy(true);
-    await saveFin({ ...fin, card_limit: limit, card_used: used, card_used_at: at });
+    await saveFin({ ...fin, card_limit: limit, card_used: used, card_debt: debt, card_used_at: at });
     onClose();
   }
   return html`
-    <${Sheet} title="💳 Kart limiti" onClose=${onClose}
+    <${Sheet} title="💳 Kart bilgileri" onClose=${onClose}
       right=${html`<button class="link strong" disabled=${busy || !(limit > 0)} onClick=${save}>Kaydet</button>`}>
       <div class="card form">
         <label class="field"><span>Kart limiti</span><${MoneyInput} value=${limit} onInput=${setLimit} /></label>
-        <label class="field"><span>Kullanılan limit<small>Bankanın uygulamasında yazan</small></span><${MoneyInput} value=${used} onInput=${setUsed} /></label>
+        <label class="field"><span>Kullanılan limit</span><${MoneyInput} value=${used} onInput=${setUsed} /></label>
+        <label class="field"><span>Borcun tamamı<small>Bu ayki kart borcu</small></span><${MoneyInput} value=${debt} onInput=${setDebt} /></label>
         <label class="field"><span>Bu bilgi tarihi</span><input type="date" value=${at} onInput=${e => setAt(e.target.value || at)} onChange=${e => setAt(e.target.value || at)} /></label>
       </div>
-      <div class="card hero center-text">
-        <div class="muted">Kalan limit</div>
-        <div class="big pos">${tl(Math.max(0, limit - used))}</div>
-      </div>
-      <p class="hint">Ayın 5'inde bankadaki iki rakamı yazman yeterli. Sadece sen görürsün.</p>
-    <//>`;
-}
-
-// ---------- Kart borcunu eşitle ----------
-
-/** Bankada görünen kart borcunu yaz; fark, o ayın kart harcamasına düzeltme olarak eklenir (nakit bakiye değişmez) */
-function CardEqSheet({ ctx, statement, onClose }) {
-  const { rows, uid, actions } = ctx;
-  const st = statementOf(rows, uid, statement);
-  const [real, setReal] = useState(st.total);
-  const [touched, setTouched] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const diff = Math.round((real - st.total) * 100) / 100;
-
-  async function save() {
-    if (!touched || busy || !diff) return;
-    setBusy(true);
-    const own = (rows.card_payments || []).filter(c => c.owner_id === uid && stmtOf(c) === statement);
-    const ok = own.length
-      ? await actions.patch('card_payments', own[0].id, { card_adjust: (Number(own[0].card_adjust) || 0) + diff })
-      : await actions.add('card_payments', { month: thisMonth(), owner_id: uid, amount: 0, includes_installments: true, statement_month: statement, card_adjust: diff });
-    if (ok !== false) { celebrate('Ekstre eşitlendi!'); onClose(); }
-    setBusy(false);
-  }
-
-  return html`
-    <${Sheet} title=${`⚖️ ${monthName(statement)} ekstresi`} onClose=${onClose}
-      right=${html`<button class="link strong" disabled=${!touched || !diff || busy} onClick=${save}>Eşitle</button>`}>
       <div class="card rows">
-        <div class="row"><span>Uygulamaya göre ekstre toplamı</span><b>${tl(st.total)}</b></div>
-        <div class="row"><span>Ödenen</span><b>${tl(st.paid)}</b></div>
+        <div class="row"><span>Kalan limit</span><b class="pos">${tl(Math.max(0, limit - used))}</b></div>
+        <div class="row"><span>Borcun tamamı</span><b class="warn">${tl(debt)}</b></div>
       </div>
-      <div class="card form">
-        <label class="field"><span>Bankadaki ekstre toplamı</span><${MoneyInput} value=${real} onInput=${v => { setReal(v); setTouched(true); }} /></label>
-      </div>
-      ${touched && html`
-        <div class="card hero center-text">
-          ${!diff ? html`<div class="big">🎉</div><div class="muted">Zaten eşit</div>`
-            : html`<div class="muted">${diff > 0 ? 'Uygulamada eksik kalan harcama' : 'Uygulamada fazla görünen harcama'}</div>
-                <div class="big ${diff > 0 ? 'neg' : 'pos'}">${tl(Math.abs(diff))}</div>
-                <div class="sub">Düzeltme olarak eklenir. Nakit bakiyeni etkilemez.</div>`}
-        </div>`}
-      <p class="hint">Küçük harcamaları tek tek girmek zorunda değilsin: ekstredeki toplamı yaz, fark düzeltme olur.</p>
+      <p class="hint">Ayın 5'inde bankadaki bu rakamları yazman yeterli. Ödeme yaparken yalnızca ödediğin tutarı gireceksin. Sadece sen görürsün.</p>
     <//>`;
 }
 
@@ -689,35 +634,17 @@ function CardEqSheet({ ctx, statement, onClose }) {
 function CardSheet({ ctx, month, prompt, onClose }) {
   const { rows, uid, actions } = ctx;
   const card = cardFor(rows, uid, month);
-  const prevM = addM(month, -1);
-  const [stmt, setStmt] = useState(card ? stmtOf(card) : prevM);
-  const st0 = statementOf(rows, uid, stmt);
-  const otherPaid = st0.paid - (card && stmtOf(card) === stmt ? Number(card.amount) || 0 : 0);
-  const [total, setTotal] = useState(st0.total);
-  const [amount, setAmount] = useState(card && stmtOf(card) === stmt ? Number(card.amount || 0) : Math.max(0, st0.total - otherPaid));
+  const [amount, setAmount] = useState(Number(card?.amount || 0));
   const included = cardItems(rows, uid, month);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
-
-  function chooseStatement(v) {
-    const s2 = statementOf(rows, uid, v);
-    const other = s2.paid - (card && stmtOf(card) === v ? Number(card.amount) || 0 : 0);
-    setStmt(v);
-    setTotal(s2.total);
-    setAmount(Math.max(0, s2.total - other));
-    setErr('');
-  }
 
   async function save(value) {
     if (busy) return;
     if (value == null && !(amount > 0)) return setErr('Ödediğin tutarı yaz (ödeme yoksa aşağıdan seç)');
     setBusy(true);
     const paid = value ?? amount;
-    const keptAdjust = card && stmtOf(card) === stmt ? Number(card.card_adjust) || 0 : 0;
-    const row = {
-      amount: paid, includes_installments: true, statement_month: stmt,
-      card_adjust: keptAdjust + Math.round((total - st0.total) * 100) / 100,
-    };
+    const row = { amount: paid, includes_installments: true };
     const ok = card ? await actions.patch('card_payments', card.id, row)
       : await actions.add('card_payments', { ...row, month, owner_id: uid });
     if (ok !== false) {
@@ -734,23 +661,20 @@ function CardSheet({ ctx, month, prompt, onClose }) {
     setBusy(false);
   }
   async function remove() {
-    if (!confirm('Bu kart ödemesi silinsin mi?')) return;
+    if (!confirm('Bu ayın kart ödemesi silinsin mi?')) return;
     await actions.del('card_payments', card.id);
     onClose();
   }
 
   return html`
-    <${Sheet} title=${`💳 Kart ödemesi`} onClose=${onClose}
+    <${Sheet} title="💳 Kart ödemesi" onClose=${onClose}
       right=${html`<button class="link strong" disabled=${busy} onClick=${() => save()}>Kaydet</button>`}>
-      ${prompt && html`<p class="lead">Yeni ay başladı! Kredi kartı ekstresini ödediniz mi?</p>`}
+      ${prompt && html`<p class="lead">Yeni ay başladı! Bu ay kredi kartına ne kadar ödedin?</p>`}
       ${err && html`<p class="error">${err}</p>`}
-      <${Seg} value=${stmt} onChange=${chooseStatement}
-        options=${[[prevM, `${monthName(prevM)} ekstresi`], [month, `${monthName(month)} ekstresi`]]} />
       <div class="card form">
-        <label class="field"><span>Bankadaki ekstre toplamı</span><${MoneyInput} value=${total} onInput=${v => { setTotal(v); setErr(''); }} /></label>
         <label class="field"><span>Bu ay ödediğin</span><${MoneyInput} value=${amount} onInput=${v => { setAmount(v); setErr(''); }} /></label>
       </div>
-      <p class="hint">Ödeme bu ayın nakit bakiyesinden düşer. Ekstre toplamı, uygulamada girmediğin küçük harcamaları da kapsar; fark otomatik düzeltme olarak eklenir.</p>
+      <p class="hint">Bu tutar bu ayın nakit bakiyesinden düşer.</p>
       <${Group} title="Bu ay tiklenecek kartlı kayıtlar" total=${sumBy(included, x => x.amount)}>
         ${included.map(({ it, kind, amount: a }) => html`<div class="row pad" key=${it.id}><span>${it.name}<small class="muted"> · ${kind}${it.shared ? ' · ortak, yarısı eşinden gelir' : ''}</small></span>
           <b>${tl(a)}</b></div>`)}
