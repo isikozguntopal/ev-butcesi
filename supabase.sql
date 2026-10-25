@@ -65,6 +65,7 @@ create table expenses (
   date date not null default current_date,
   shared boolean not null default false,
   split text not null default 'half' check (split in ('half', 'payer')),
+  paid_months text[] not null default '{}',
   created_at timestamptz not null default now()
 );
 
@@ -185,6 +186,11 @@ create table if not exists settlements (
   from_id uuid references auth.users on delete set null,
   to_id uuid references auth.users on delete set null,
   amount numeric not null default 0,
+  sent_at timestamptz,
+  sent_by uuid,
+  received_at timestamptz,
+  received_by uuid,
+  log jsonb not null default '[]',
   created_by uuid default auth.uid() references auth.users on delete set null,
   created_at timestamptz not null default now(),
   unique (household_id, month)

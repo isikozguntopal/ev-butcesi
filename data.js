@@ -163,20 +163,20 @@ function sampleData() {
     card_payments: [{ id: id(), household_id: H, owner_id: U, month: m, amount: 8400, includes_installments: true, created_at: now }],
     settlements: [],
     installments: [
-      { id: id(), ...own, name: 'Telefon', monthly_amount: 2250, first_month: `${monthKey(-2)}-01`, last_month: `${monthKey(9)}-01`, shared: false, split: 'half', paid_months: [m] },
+      { id: id(), ...own, name: 'Telefon', monthly_amount: 2250, first_month: `${monthKey(-2)}-01`, last_month: `${monthKey(9)}-01`, shared: false, split: 'half', paid_months: [`${m}:${U}`] },
       { id: id(), ...own, name: 'Bulaşık makinesi', monthly_amount: 1800, first_month: `${monthKey(-1)}-01`, last_month: `${monthKey(4)}-01`, shared: true, split: 'half', paid_months: [] },
       { id: id(), ...own, name: 'Laptop', monthly_amount: 3100, first_month: `${monthKey(-4)}-01`, last_month: `${monthKey(7)}-01`, shared: false, split: 'half', paid_months: [] },
     ],
     fixed_payments: [
-      { id: id(), ...own, name: 'Kira', amount: 18000, shared: true, split: 'half', paid_months: [m] },
+      { id: id(), ...own, name: 'Kira', amount: 18000, shared: true, split: 'half', paid_months: [`${m}:${U}`] },
       { id: id(), ...own, name: 'Elektrik', amount: 900, shared: true, split: 'half', paid_months: [] },
-      { id: id(), ...own, name: 'İnternet', amount: 450, shared: false, split: 'half', paid_months: [m] },
+      { id: id(), ...own, name: 'İnternet', amount: 450, shared: false, split: 'half', paid_months: [`${m}:${U}`] },
       { id: id(), ...own, name: 'Spor salonu', amount: 1200, shared: false, split: 'half', paid_months: [] },
     ],
     expenses: [
-      { id: id(), ...own, name: 'Market', amount: 2340, date: day(20), shared: true, split: 'half' },
-      { id: id(), ...own, name: 'Benzin', amount: 1500, date: day(14), shared: false, split: 'half' },
-      { id: id(), ...own, name: 'Kahve', amount: 180, date: day(22), shared: false, split: 'half' },
+      { id: id(), ...own, name: 'Market', amount: 2340, date: day(20), shared: true, split: 'half', paid_months: [`${m}:${U}`] },
+      { id: id(), ...own, name: 'Benzin', amount: 1500, date: day(14), shared: false, split: 'half', paid_months: [`${m}:${U}`] },
+      { id: id(), ...own, name: 'Kahve', amount: 180, date: day(22), shared: false, split: 'half', paid_months: [`${m}:${U}`] },
     ],
     shopping_items: Object.entries(DEFAULT_SHOPPING).flatMap(([category, names]) => names.map(name => ({
       id: id(), household_id: H, name, category, in_list: listed.includes(name), checked: ['Süt', 'Ekmek'].includes(name), created_at: now,
