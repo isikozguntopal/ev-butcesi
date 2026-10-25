@@ -238,6 +238,10 @@
       animation: up .22s ease-out;
     }
     @keyframes up { from { transform: translateY(40px); opacity: 0; } }
+    .sheet { overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+    .backdrop.full { align-items: stretch; }
+    .sheet.full { max-height: none; height: 100%; border-radius: 0; padding-top: env(safe-area-inset-top); animation: slide .22s ease-out; }
+    @keyframes slide { from { transform: translateX(30px); opacity: 0; } }
     .sheet-head {
       position: sticky; top: 0; background: var(--bg); z-index: 1;
       display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; padding: 8px 12px;

@@ -133,14 +133,40 @@ function settlementFor(rows, members, m) {
 }
 const pick = a => a[Math.floor(Math.random() * a.length)];
 
+/** Hesaplaşmada açılacak ay: içinde bulunulan ay. Ayın ilk 10 günü geçen ayın
+ *  hesaplaşması hâlâ bekliyorsa (gönderilmedi/alınmadı) önce geçen ay. */
+function defaultSettleMonth(rows, members) {
+  const now = thisMonth();
+  const prev = addM(now, -1);
+  if (new Date().getDate() > 10) return now;
+  const s = settlementFor(rows, members, prev);
+  const rec = (rows.settlements || []).find(x => x.month === prev);
+  return s && s.amount >= 1 && !(rec?.sent_at || rec?.received_at) ? prev : now;
+}
+
 // ---------- Ortak bileşenler ----------
 
-function Sheet({ title, onClose, right, children }) {
+// Açık pencere varken arkadaki sayfa kaymasın (iPhone'da body'yi sabitleyerek)
+let sheetLocks = 0;
+let lockedY = 0;
+function lockScroll() {
+  if (sheetLocks++ > 0) return;
+  lockedY = window.scrollY;
+  Object.assign(document.body.style, { position: 'fixed', top: `-${lockedY}px`, left: '0', right: '0', overflow: 'hidden' });
+}
+function unlockScroll() {
+  if (--sheetLocks > 0) return;
+  Object.assign(document.body.style, { position: '', top: '', left: '', right: '', overflow: '' });
+  window.scrollTo(0, lockedY);
+}
+
+function Sheet({ title, onClose, right, children, full }) {
+  useEffect(() => { lockScroll(); return unlockScroll; }, []);
   return html`
-    <div class="backdrop" onClick=${onClose}>
-      <div class="sheet" onClick=${e => e.stopPropagation()}>
+    <div class=${'backdrop' + (full ? ' full' : '')} onClick=${onClose}>
+      <div class=${'sheet' + (full ? ' full' : '')} onClick=${e => e.stopPropagation()}>
         <div class="sheet-head">
-          <button class="link" onClick=${onClose}>Vazgeç</button>
+          <button class="link" onClick=${onClose}>${full ? '‹ Geri' : 'Vazgeç'}</button>
           <b>${title}</b>
           ${right || html`<span class="spacer"></span>`}
         </div>
@@ -592,7 +618,7 @@ const LOG_LABEL = { sent: 'Gönderdim', unsent: '"Gönderdim" işaretini kaldır
 
 function SettleView({ ctx }) {
   const { rows, members, names, uid, actions } = ctx;
-  const [m, setM] = useState(addM(thisMonth(), -1));
+  const [m, setM] = useState(() => defaultSettleMonth(rows, members));
   const [review, setReview] = useState(false);
   const s = settlementFor(rows, members, m);
   const rec = rows.settlements.find(x => x.month === m);
@@ -702,7 +728,8 @@ function SettleSummary({ s, rec, month, who, uid, onMark, onClose }) {
   };
 
   return html`
-    <${Sheet} title=${`💸 ${monthName(month)} özeti`} onClose=${onClose}>
+    <${Sheet} full title=${`💸 ${monthName(month)} özeti`} onClose=${onClose}
+      right=${html`<span class="spacer"></span>`}>
       <p class="hint">${monthName(month)} ayının "yarı yarıya" ortak kalemleri. Kartı kim ödediyse diğeri yarısını borçlanır.</p>
       ${side(s.B, s.A)}
       ${side(s.A, s.B)}
@@ -901,7 +928,7 @@ function byCategory(items) {
 }
 const lower = s => s.toLocaleLowerCase('tr');
 
-function ShoppingScreen({ ctx }) {
+function ShoppingScreen({ ctx, embedded }) {
   const { rows, actions } = ctx;
   const [mode, setMode] = useState('list');
   const [q, setQ] = useState('');
@@ -927,7 +954,7 @@ function ShoppingScreen({ ctx }) {
   const filtered = q.trim() ? items.filter(i => lower(i.name).includes(lower(q.trim()))) : items;
 
   return html`
-    <header class="top"><h1>Alışveriş</h1></header>
+    ${!embedded && html`<header class="top"><h1>Alışveriş</h1></header>`}
     <${Buddy} face=${dailyFace(2)} say=${inList.length
       ? `Listede ${inList.length - checked.length} şey kaldı, hadi markete! 🛒`
       : 'Liste boş. Dolap dolu mu acaba? 🧺'} />
@@ -1022,7 +1049,7 @@ function WishForm({ ctx, item, onClose }) {
     <//>`;
 }
 
-function WishScreen({ ctx }) {
+function WishScreen({ ctx, embedded }) {
   const { rows, actions } = ctx;
   const [form, setForm] = useState(null);
   const [buying, setBuying] = useState(null);
@@ -1035,7 +1062,7 @@ function WishScreen({ ctx }) {
   const keys = Object.keys(groups).sort((a, b) => (a === '' ? 1 : b === '' ? -1 : a < b ? -1 : 1));
 
   return html`
-    <header class="top"><h1>Alacaklarımız</h1></header>
+    ${!embedded && html`<header class="top"><h1>Alacaklarımız</h1></header>`}
     <${Buddy} face=${dailyFace(3)} say=${open.length
       ? `Yuvamız için ${open.length} hayalimiz var 🏡`
       : 'Hayal listesi boş. Ne alsak? ✨'} />
@@ -1107,13 +1134,6 @@ function BenScreen({ ctx }) {
   const totalSaved = Number(f.savings_tl) + usdTl + eurTl + goldTl;
 
   const myName = names[uid] || '';
-  const prev = addM(thisMonth(), -1);
-  const s = settlementFor(rows, members, prev);
-  const rec = rows.settlements.find(x => x.month === prev);
-  const who = id => (id === uid ? 'Sen' : names[id] || 'Eşin');
-  const settleSub = !s ? 'Eşin katılınca hesaplanır'
-    : s.amount < 1 ? `${monthName(prev)}: kimsenin borcu yok`
-    : `${monthName(prev)}: ${who(s.from)} → ${who(s.to)} ${tl(s.amount)} · ${rec?.received_at ? 'alındı ✓' : rec?.sent_at ? 'gönderildi' : 'bekliyor'}`;
 
   const back = title => html`
     <header class="top sub-head">
@@ -1122,7 +1142,6 @@ function BenScreen({ ctx }) {
     </header>`;
 
   if (page === 'savings') return html`${back('Birikimim')}<${SavingsView} f=${f} setF=${setF} rates=${rates} totals=${{ usdTl, eurTl, goldTl, totalSaved }} />`;
-  if (page === 'settle') return html`${back('Hesaplaşma')}<${SettleView} ctx=${ctx} />`;
   if (page === 'report') return html`${back('Raporlar')}<${ReportView} ctx=${ctx} />`;
   if (page === 'settings') return html`${back('Ayarlar')}<${SettingsView} ctx=${ctx} />`;
 
@@ -1138,7 +1157,6 @@ function BenScreen({ ctx }) {
     <${Buddy} face=${dailyFace(4)} say=${`Kumbaramızda ${tl(totalSaved)} var 🐷`} />
     <div class="card">
       ${item('savings', '💰', 'Birikimim', `${tl(totalSaved)} · gelir ${tl(f.income)}`)}
-      ${item('settle', '💸', 'Hesaplaşma', settleSub)}
       ${item('report', '📊', 'Raporlar', 'Para nereye gidiyor, en büyük taksitler')}
       ${item('settings', '⚙️', 'Ayarlar', 'Aile, bildirimler, gösterim modu')}
     </div>
@@ -1406,13 +1424,35 @@ function SetupScreen({ onDone }) {
     </div>`;
 }
 
+// ---------- Birleşik sekmeler ----------
+
+/** Alışveriş sekmesi: üstte Market / Alacaklar seçimi */
+function ListsScreen({ ctx }) {
+  const [part, setPartState] = useState(() => { try { return localStorage.getItem('tf-lists') || 'shop'; } catch { return 'shop'; } });
+  const setPart = v => { setPartState(v); window.scrollTo(0, 0); try { localStorage.setItem('tf-lists', v); } catch { /* yok say */ } };
+  const listCount = ctx.rows.shopping_items.filter(i => i.in_list && !i.checked).length;
+  const wishCount = ctx.rows.wishlist.filter(w => !w.bought).length;
+  return html`
+    <header class="top"><h1>Alışveriş</h1></header>
+    <${Seg} value=${part} onChange=${setPart}
+      options=${[['shop', `🛒 Market${listCount ? ` (${listCount})` : ''}`], ['wish', `🛋️ Alacaklar${wishCount ? ` (${wishCount})` : ''}`]]} />
+    ${part === 'shop' ? html`<${ShoppingScreen} ctx=${ctx} embedded />` : html`<${WishScreen} ctx=${ctx} embedded />`}`;
+}
+
+/** Hesaplaşma sekmesi */
+function SettleScreen({ ctx }) {
+  return html`
+    <header class="top"><h1>Hesaplaşma</h1></header>
+    <${SettleView} ctx=${ctx} />`;
+}
+
 // ---------- Uygulama ----------
 
 const TABS = [
   ['month', 'Bu Ay', '📅'],
   ['payments', 'Ödemeler', '💳'],
   ['shop', 'Alışveriş', '🛒'],
-  ['wish', 'Alacaklar', '🛋️'],
+  ['settle', 'Hesaplaşma', '💸'],
   ['money', 'Ben', '👤'],
 ];
 
@@ -1426,7 +1466,13 @@ function App() {
   const [fin, setFin] = useState(null);
   const [exitingShow, setExitingShow] = useState(false);
   const [askCard, setAskCard] = useState(false);
-  const [tab, setTab] = useState(() => { try { return localStorage.getItem('tf-tab') || 'month'; } catch { return 'month'; } });
+  const [tab, setTab] = useState(() => {
+    try {
+      const t = localStorage.getItem('tf-tab') || 'month';
+      if (t === 'wish') { localStorage.setItem('tf-lists', 'wish'); return 'shop'; }
+      return t;
+    } catch { return 'month'; }
+  });
 
   async function reload() {
     const entries = await Promise.all(TABLES.map(async t => [t, await api.select(t)]));
@@ -1515,12 +1561,12 @@ function App() {
 
   ME = user.id;
   const ctx = { uid: user.id, rows, actions, members, names, fin, saveFin, household, signOut, askExitShow: () => setExitingShow(true),
-    goSettle: () => { try { localStorage.setItem('tf-ben-page', 'settle'); } catch { /* yok say */ } setTab('money'); window.scrollTo(0, 0); },
+    goSettle: () => { setTab('settle'); window.scrollTo(0, 0); },
     savePrefs: async prefs => {
       setMembers(ms => ms.map(m => (m.user_id === user.id ? { ...m, notify_prefs: prefs } : m)));
       await guard(() => api.saveNotifyPrefs(user.id, prefs));
     } };
-  const Screen = { month: MonthScreen, payments: PaymentsScreen, shop: ShoppingScreen, wish: WishScreen, money: BenScreen }[tab];
+  const Screen = { month: MonthScreen, payments: PaymentsScreen, shop: ListsScreen, settle: SettleScreen, money: BenScreen }[tab] || MonthScreen;
 
   return html`
     <main class="screen">
