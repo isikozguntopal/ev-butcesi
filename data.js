@@ -73,6 +73,9 @@ const remote = {
   async notify(msg) {
     return check(await (await client()).functions.invoke('notify', { body: msg }));
   },
+  async saveNotifyPrefs(uid, prefs) {
+    check(await (await client()).from('members').update({ notify_prefs: prefs }).eq('user_id', uid));
+  },
 };
 
 // --- Deneme modu: her şey bu cihazın localStorage'ında ---
@@ -134,6 +137,11 @@ const demo = {
     writeDb(db);
   },
   async savePush() {},
+  async saveNotifyPrefs(uid, prefs) {
+    const db = readDb();
+    db.members = db.members.map(m => (m.user_id === uid ? { ...m, notify_prefs: prefs } : m));
+    writeDb(db);
+  },
   async notify() {},
 };
 

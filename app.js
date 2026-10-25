@@ -398,7 +398,7 @@ function MonthScreen({ ctx }) {
   const partnerTag = it => (it.shared && partner
     ? `${partner.display_name} ${isPaid(it, m, partner.user_id) ? 'ödedi ✓' : 'ödemedi'}` : null);
   const allPaid = total > 0 && paidT >= total;
-  const say = !income ? 'Merhaba! Önce Param sekmesinden gelirini yazalım mı? 🥕'
+  const say = !income ? 'Merhaba! Önce Ben → Birikimim bölümüne gelirini yazalım mı? 🥕'
     : allPaid ? 'Bu ayın bütün ödemeleri tamam, harikasınız! 🎉'
     : left >= 0 ? `Bu ay ${tl(left)} artıyor, süpersiniz! ✨`
     : `Eyvah, ${tl(-left)} eksideyiz 🙈`;
@@ -425,7 +425,7 @@ function MonthScreen({ ctx }) {
     <div class="card hero">
       <div class="muted">Ay sonunda kalan</div>
       <div class=${'big ' + (left < 0 ? 'neg' : 'pos')}>${tl(left)}</div>
-      ${!income && html`<div class="sub">Param sekmesinden aylık gelirini gir</div>`}
+      ${!income && html`<div class="sub">Ben → Birikimim bölümüne aylık gelirini yaz</div>`}
       <div class="rows">
         <div class="row"><span>Gelir</span><b>${tl(income)}</b></div>
         <div class="row"><span>Kredi kartı ödemesi</span><b>${card ? tl(cardAmt) : html`<span class="warn">Girilmedi</span>`}</b></div>
@@ -629,6 +629,7 @@ function SettleView({ ctx }) {
       celebrate(kind === 'sent' ? 'Gönderildi!' : 'Hesaplar kapandı!');
       const me = names[uid] || 'Eşin';
       api.notify({
+        type: 'settle',
         title: '💸 Hesaplaşma',
         body: kind === 'sent' ? `${me}: ${monthName(m)} için ${tl(s.amount)} gönderdim` : `${me}: ${tl(s.amount)} geldi, aldım ✓`,
       }).catch(() => {});
@@ -1086,37 +1087,79 @@ function useRates() {
   return r;
 }
 
-function MoneyScreen({ ctx }) {
-  const { fin, saveFin, household, members, uid, signOut } = ctx;
+/** "Ben" sekmesi: menü + alt sayfalar (Birikimim, Hesaplaşma, Raporlar, Ayarlar) */
+function BenScreen({ ctx }) {
+  const { fin, saveFin, members, names, uid, rows } = ctx;
+  const [page, setPageState] = useState(() => {
+    try { const p = localStorage.getItem('tf-ben-page'); localStorage.removeItem('tf-ben-page'); return p || null; } catch { return null; }
+  });
+  const setPage = p => { setPageState(p); window.scrollTo(0, 0); };
   const [f, setF] = useState(fin);
-  const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (f === fin) return;
     const t = setTimeout(() => saveFin(f), 600);
     return () => clearTimeout(t);
   }, [f]);
-  const set = k => v => setF({ ...f, [k]: v });
   const rates = useRates();
-  const usdRate = rates?.usd || Number(f.usd_rate) || 0;
-  const usdTl = Math.round(Number(f.usd_amount) * usdRate);
+  const usdTl = Math.round(Number(f.usd_amount) * (rates?.usd || Number(f.usd_rate) || 0));
   const eurTl = Math.round(Number(f.eur_amount || 0) * (rates?.eur || 0));
   const goldTl = Math.round(Number(f.gold_grams || 0) * (rates?.gold || 0));
   const totalSaved = Number(f.savings_tl) + usdTl + eurTl + goldTl;
-  const approx = v => (v ? `≈ ${tl(v)}` : '');
 
-  async function startShow() {
-    if (!confirm('Gösterim moduna geçilsin mi? Gerçek verilerin gizlenir.')) return;
-    await enterShowMode();
-    location.reload();
-  }
+  const myName = names[uid] || '';
+  const prev = addM(thisMonth(), -1);
+  const s = settlementFor(rows, members, prev);
+  const rec = rows.settlements.find(x => x.month === prev);
+  const who = id => (id === uid ? 'Sen' : names[id] || 'Eşin');
+  const settleSub = !s ? 'Eşin katılınca hesaplanır'
+    : s.amount < 1 ? `${monthName(prev)}: kimsenin borcu yok`
+    : `${monthName(prev)}: ${who(s.from)} → ${who(s.to)} ${tl(s.amount)} · ${rec?.received_at ? 'alındı ✓' : rec?.sent_at ? 'gönderildi' : 'bekliyor'}`;
 
-  async function copy() {
-    try { await navigator.clipboard.writeText(household.invite_code); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* kopyalanamadıysa kod ekranda görünüyor */ }
-  }
+  const back = title => html`
+    <header class="top sub-head">
+      <button class="link" onClick=${() => setPage(null)}>‹ Ben</button>
+      <h1>${title}</h1>
+    </header>`;
+
+  if (page === 'savings') return html`${back('Birikimim')}<${SavingsView} f=${f} setF=${setF} rates=${rates} totals=${{ usdTl, eurTl, goldTl, totalSaved }} />`;
+  if (page === 'settle') return html`${back('Hesaplaşma')}<${SettleView} ctx=${ctx} />`;
+  if (page === 'report') return html`${back('Raporlar')}<${ReportView} ctx=${ctx} />`;
+  if (page === 'settings') return html`${back('Ayarlar')}<${SettingsView} ctx=${ctx} />`;
+
+  const item = (id, icon, title, sub) => html`
+    <button class="item menu-item" onClick=${() => setPage(id)}>
+      <span class="menu-icon">${icon}</span>
+      <span class="grow"><span class="title">${title}</span><span class="sub">${sub}</span></span>
+      <span class="chev-r">›</span>
+    </button>`;
 
   return html`
-    <header class="top"><h1>Param</h1></header>
+    <header class="top"><h1>${myName ? `Merhaba ${myName}` : 'Ben'}</h1></header>
     <${Buddy} face=${dailyFace(4)} say=${`Kumbaramızda ${tl(totalSaved)} var 🐷`} />
+    <div class="card">
+      ${item('savings', '💰', 'Birikimim', `${tl(totalSaved)} · gelir ${tl(f.income)}`)}
+      ${item('settle', '💸', 'Hesaplaşma', settleSub)}
+      ${item('report', '📊', 'Raporlar', 'Para nereye gidiyor, en büyük taksitler')}
+      ${item('settings', '⚙️', 'Ayarlar', 'Aile, bildirimler, gösterim modu')}
+    </div>
+    ${SHOW && html`<p class="hint center">🎭 Gösterim modundasın: örnek veriler görünüyor.</p>`}`;
+}
+
+function SavingsView({ f, setF, rates, totals }) {
+  const set = k => v => setF({ ...f, [k]: v });
+  const { usdTl, eurTl, goldTl, totalSaved } = totals;
+  const approx = v => (v ? `≈ ${tl(v)}` : '');
+  return html`
+    <div class="card hero">
+      <div class="muted">Toplam birikim</div>
+      <div class="big">${tl(totalSaved)}</div>
+      <div class="rows">
+        <div class="row"><span>TL</span><b>${tl(f.savings_tl)}</b></div>
+        ${Number(f.usd_amount) > 0 && html`<div class="row"><span>${usd(f.usd_amount)}</span><b>${tl(usdTl)}</b></div>`}
+        ${Number(f.eur_amount) > 0 && html`<div class="row"><span>${eur(f.eur_amount)}</span><b>${tl(eurTl)}</b></div>`}
+        ${Number(f.gold_grams) > 0 && html`<div class="row"><span>${plain(f.gold_grams)} gr altın</span><b>${tl(goldTl)}</b></div>`}
+      </div>
+    </div>
     <${Group} title="Gelir">
       <label class="field"><span>Aylık gelir</span><${MoneyInput} value=${f.income} onInput=${set('income')} /></label>
     <//>
@@ -1128,29 +1171,50 @@ function MoneyScreen({ ctx }) {
     <//>
     <p class="hint">${rates
       ? `Kurlar: $ ${tl(rates.usd)} · € ${tl(rates.eur)} (TCMB ${rates.date || ''}) · gram altın ${tl(rates.gold)}. Bu bilgileri sadece sen görürsün.`
-      : 'Kurlar alınamadı, internet bağlantını kontrol et. Bu bilgileri sadece sen görürsün.'}</p>
-    <div class="card hero">
-      <div class="muted">Toplam birikim</div>
-      <div class="big">${tl(totalSaved)}</div>
-      <div class="rows">
-        <div class="row"><span>TL</span><b>${tl(f.savings_tl)}</b></div>
-        ${Number(f.usd_amount) > 0 && html`<div class="row"><span>${usd(f.usd_amount)}</span><b>${tl(usdTl)}</b></div>`}
-        ${Number(f.eur_amount) > 0 && html`<div class="row"><span>${eur(f.eur_amount)}</span><b>${tl(eurTl)}</b></div>`}
-        ${Number(f.gold_grams) > 0 && html`<div class="row"><span>${plain(f.gold_grams)} gr altın</span><b>${tl(goldTl)}</b></div>`}
-      </div>
-    </div>
+      : 'Kurlar alınamadı, internet bağlantını kontrol et. Bu bilgileri sadece sen görürsün.'}</p>`;
+}
 
-    <${SettleView} ctx=${ctx} />
-    <${ReportView} ctx=${ctx} />
+const NOTIFY_TYPES = [
+  ['shared', 'Ortak kayıt eklenince', 'Eşin ortak harcama, taksit ya da her ay ödemesi ekleyince'],
+  ['wish', 'Alacaklara ekleme', 'Alacaklarımız listesine bir şey eklenince'],
+  ['settle', 'Hesaplaşma hareketleri', 'Eşin "Gönderdim" ya da "Parayı aldım" deyince'],
+  ['card', 'Kart ödemesi hatırlatması', "Ayın 1'i ve 3'ü, kart ödemeni girmediysen"],
+  ['payday', 'Hesaplaşma günü', "Her ayın 5'i, 09:00"],
+];
 
-    <${Group} title=${household.name}>
+function SettingsView({ ctx }) {
+  const { household, members, uid, signOut } = ctx;
+  const [copied, setCopied] = useState(false);
+  const me = members.find(m => m.user_id === uid);
+  const prefs = me?.notify_prefs || {};
+
+  async function startShow() {
+    if (!confirm('Gösterim moduna geçilsin mi? Gerçek verilerin gizlenir.')) return;
+    await enterShowMode();
+    location.reload();
+  }
+  async function copy() {
+    try { await navigator.clipboard.writeText(household.invite_code); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* kopyalanamadıysa kod ekranda görünüyor */ }
+  }
+
+  return html`
+    <${Group} title=${`Aile · ${household.name}`}>
       ${members.map(m => html`<div class="row pad" key=${m.user_id}><span>${m.display_name}</span><span class="muted">${m.user_id === uid ? 'sen' : ''}</span></div>`)}
       ${members.length < 2 && !DEMO && html`
         <div class="row pad"><span>Davet kodu</span><button class="code" onClick=${copy}>${copied ? 'Kopyalandı' : household.invite_code}</button></div>`}
     <//>
-    <${PushSettings} />
     ${members.length < 2 && !DEMO && html`<p class="hint">Eşin uygulamada hesap açıp "Davet koduyla katıl" deyip bu kodu girsin.</p>`}
-    ${DEMO && !SHOW && html`<p class="hint">Deneme modundasınız: veriler sadece bu cihazda. Supabase bağlanınca iki telefon eşitlenir.</p>`}
+
+    <${PushSettings} />
+    <${Group} title="Hangi bildirimler gelsin?">
+      ${NOTIFY_TYPES.map(([k, title, sub]) => html`
+        <label class="field toggle" key=${k}>
+          <span>${title}<small>${sub}</small></span>
+          <input type="checkbox" checked=${prefs[k] !== false}
+            onChange=${e => ctx.savePrefs({ ...prefs, [k]: e.target.checked })} />
+        </label>`)}
+    <//>
+    <p class="hint">Şahsi kayıtların için hiçbir zaman bildirim gitmez. Bu tercihler sadece sana gelen bildirimleri etkiler.</p>
 
     <${Group} title="Başkalarına gösterirken">
       ${SHOW
@@ -1162,6 +1226,7 @@ function MoneyScreen({ ctx }) {
     <p class="hint">${SHOW
       ? 'Şu an örnek veriler görünüyor. Gerçek verilere dönmek için şifren sorulur.'
       : 'Gerçek verilerin gizlenir, uydurma verilerle dolu bir örnek aile görünür. Çıkmak için şifren sorulur.'}</p>
+    ${DEMO && !SHOW && html`<p class="hint">Deneme modundasınız: veriler sadece bu cihazda. Supabase bağlanınca iki telefon eşitlenir.</p>`}
     ${!SHOW && html`<button class="danger" onClick=${signOut}>${DEMO ? 'Deneme verilerini sıfırla' : 'Çıkış yap'}</button>`}`;
 }
 
@@ -1169,11 +1234,11 @@ function MoneyScreen({ ctx }) {
 
 /** Eşe gidecek bildirim; şahsi kayıtlar için null (onlar gizli kalır) */
 function notifyText(table, r, who) {
-  if (table === 'wishlist') return { title: '🛋️ Alacaklara eklendi', body: `${who}: ${r.name}${Number(r.price) ? ` · ${tl(r.price)}` : ''}` };
+  if (table === 'wishlist') return { type: 'wish', title: '🛋️ Alacaklara eklendi', body: `${who}: ${r.name}${Number(r.price) ? ` · ${tl(r.price)}` : ''}` };
   if (!r.shared) return null;
-  if (table === 'expenses') return { title: '🛍️ Yeni ortak harcama', body: `${who}: ${r.name} · ${tl(r.amount)}` };
-  if (table === 'installments') return { title: '💳 Yeni ortak taksit', body: `${who}: ${r.name} · ${tl(r.monthly_amount)} × ${inst.total(r)} ay` };
-  if (table === 'fixed_payments') return { title: '🔁 Yeni ortak aylık ödeme', body: `${who}: ${r.name} · ${tl(r.amount)}` };
+  if (table === 'expenses') return { type: 'shared', title: '🛍️ Yeni ortak harcama', body: `${who}: ${r.name} · ${tl(r.amount)}` };
+  if (table === 'installments') return { type: 'shared', title: '💳 Yeni ortak taksit', body: `${who}: ${r.name} · ${tl(r.monthly_amount)} × ${inst.total(r)} ay` };
+  if (table === 'fixed_payments') return { type: 'shared', title: '🔁 Yeni ortak aylık ödeme', body: `${who}: ${r.name} · ${tl(r.amount)}` };
   return null;
 }
 
@@ -1348,7 +1413,7 @@ const TABS = [
   ['payments', 'Ödemeler', '💳'],
   ['shop', 'Alışveriş', '🛒'],
   ['wish', 'Alacaklar', '🛋️'],
-  ['money', 'Param', '💰'],
+  ['money', 'Ben', '👤'],
 ];
 
 function App() {
@@ -1450,8 +1515,12 @@ function App() {
 
   ME = user.id;
   const ctx = { uid: user.id, rows, actions, members, names, fin, saveFin, household, signOut, askExitShow: () => setExitingShow(true),
-    goSettle: () => { setTab('money'); setTimeout(() => document.getElementById('settle')?.scrollIntoView({ behavior: 'smooth' }), 250); } };
-  const Screen = { month: MonthScreen, payments: PaymentsScreen, shop: ShoppingScreen, wish: WishScreen, money: MoneyScreen }[tab];
+    goSettle: () => { try { localStorage.setItem('tf-ben-page', 'settle'); } catch { /* yok say */ } setTab('money'); window.scrollTo(0, 0); },
+    savePrefs: async prefs => {
+      setMembers(ms => ms.map(m => (m.user_id === user.id ? { ...m, notify_prefs: prefs } : m)));
+      await guard(() => api.saveNotifyPrefs(user.id, prefs));
+    } };
+  const Screen = { month: MonthScreen, payments: PaymentsScreen, shop: ShoppingScreen, wish: WishScreen, money: BenScreen }[tab];
 
   return html`
     <main class="screen">

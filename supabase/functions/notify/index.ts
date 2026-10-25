@@ -42,17 +42,20 @@ async function monthly(admin: Admin) {
   const tr = new Date(Date.now() + 3 * 3600_000); // Türkiye saati
   const day = tr.getUTCDate();
   const month = `${tr.getUTCFullYear()}-${String(tr.getUTCMonth() + 1).padStart(2, '0')}`;
-  const { data: members } = await admin.from('members').select('user_id');
-  const all: string[] = (members ?? []).map((m: { user_id: string }) => m.user_id);
+  const { data: members } = await admin.from('members').select('user_id, notify_prefs');
+  // Tercihinde kapatmış olanlara gönderme (boş tercih = açık)
+  const wants = (type: string): string[] => (members ?? [])
+    .filter((m: { notify_prefs?: Record<string, boolean> }) => (m.notify_prefs ?? {})[type] !== false)
+    .map((m: { user_id: string }) => m.user_id);
   let sent = 0;
   if (day <= 3) {
     const { data: done } = await admin.from('card_payments').select('owner_id').eq('month', month);
     const doneIds = new Set((done ?? []).map((d: { owner_id: string }) => d.owner_id));
-    sent += await sendTo(admin, all.filter(id => !doneIds.has(id)),
+    sent += await sendTo(admin, wants('card').filter((id: string) => !doneIds.has(id)),
       '💳 Kredi kartı ödemesi', 'Bu ay kartına ne kadar ödediğini girmeyi unutma 🐷');
   }
   if (day === 5) {
-    sent += await sendTo(admin, all, '💸 Hesaplaşma günü', 'Geçen ayın ortak harcamalarına göre kimin kime ne atacağı hazır 🐻');
+    sent += await sendTo(admin, wants('payday'), '💸 Hesaplaşma günü', 'Geçen ayın ortak harcamalarına göre kimin kime ne atacağı hazır 🐻');
   }
   return { day, sent };
 }
@@ -71,7 +74,7 @@ Deno.serve(async req => {
   const { data: { user } } = await asUser.auth.getUser();
   if (!user) return json({ error: 'giriş gerekli' }, 401);
 
-  const { title, body, test } = await req.json().catch(() => ({}));
+  const { title, body, test, type } = await req.json().catch(() => ({}));
   const admin = createClient(url, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
 
   // Kurulum testi: bildirimi sadece isteyen kişinin kendi telefonlarına gönder
@@ -79,9 +82,11 @@ Deno.serve(async req => {
 
   const { data: me } = await admin.from('members').select('household_id').eq('user_id', user.id).maybeSingle();
   if (!me) return json({ sent: 0 });
-  const { data: others } = await admin.from('members').select('user_id')
+  const { data: others } = await admin.from('members').select('user_id, notify_prefs')
     .eq('household_id', me.household_id).neq('user_id', user.id);
-  const ids = (others ?? []).map(o => o.user_id);
+  const ids = (others ?? [])
+    .filter((o: { notify_prefs?: Record<string, boolean> }) => !type || (o.notify_prefs ?? {})[type] !== false)
+    .map((o: { user_id: string }) => o.user_id);
   if (!ids.length) return json({ sent: 0 });
 
   return json({ sent: await sendTo(admin, ids, String(title ?? 'Aile Bütçesi'), String(body ?? '')) });

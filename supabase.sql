@@ -12,6 +12,7 @@ create table members (
   user_id uuid primary key default auth.uid() references auth.users on delete cascade,
   household_id uuid not null references households on delete cascade,
   display_name text not null,
+  notify_prefs jsonb not null default '{}',
   created_at timestamptz not null default now()
 );
 
