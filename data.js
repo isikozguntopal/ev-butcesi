@@ -14,7 +14,7 @@ const store = {
 export const SHOW = CONFIGURED && store.get(SHOW_FLAG) === '1';
 /** Supabase yoksa ya da gösterim modundaysa veriler sadece bu cihazda, örnek veridir */
 export const DEMO = !CONFIGURED || SHOW;
-export const TABLES = ['installments', 'fixed_payments', 'expenses', 'shopping_items', 'wishlist'];
+export const TABLES = ['installments', 'fixed_payments', 'expenses', 'shopping_items', 'wishlist', 'card_payments', 'settlements'];
 
 // --- Supabase ---
 
@@ -113,18 +113,18 @@ const demo = {
       ...(OWNED.includes(table) ? { owner_id: DEMO_UID, payer_id: DEMO_UID, paid_months: [] } : {}),
       ...r,
     }));
-    db[table].push(...added);
+    (db[table] ||= []).push(...added);
     writeDb(db);
     return added;
   },
   async update(table, id, patch) {
     const db = readDb();
-    db[table] = db[table].map(r => (r.id === id ? { ...r, ...patch } : r));
+    db[table] = (db[table] || []).map(r => (r.id === id ? { ...r, ...patch } : r));
     writeDb(db);
   },
   async remove(table, id) {
     const db = readDb();
-    db[table] = db[table].filter(r => r.id !== id);
+    db[table] = (db[table] || []).filter(r => r.id !== id);
     writeDb(db);
   },
   async finance() { return readDb().finances[0] || null; },
@@ -159,7 +159,9 @@ function sampleData() {
   return {
     households: [{ id: H, name: 'Örnek Aile', invite_code: 'ORNEK', created_at: now }],
     members: [{ user_id: U, household_id: H, display_name: 'Ayşe', created_at: now }],
-    finances: [{ user_id: U, income: 70000, savings_tl: 45000, usd_amount: 1200, usd_rate: 41.5 }],
+    finances: [{ user_id: U, income: 70000, savings_tl: 45000, usd_amount: 1200, usd_rate: 41.5, eur_amount: 300, gold_grams: 10 }],
+    card_payments: [{ id: id(), household_id: H, owner_id: U, month: m, amount: 8400, includes_installments: true, created_at: now }],
+    settlements: [],
     installments: [
       { id: id(), ...own, name: 'Telefon', monthly_amount: 2250, first_month: `${monthKey(-2)}-01`, last_month: `${monthKey(9)}-01`, shared: false, split: 'half', paid_months: [m] },
       { id: id(), ...own, name: 'Bulaşık makinesi', monthly_amount: 1800, first_month: `${monthKey(-1)}-01`, last_month: `${monthKey(4)}-01`, shared: true, split: 'half', paid_months: [] },

@@ -10,6 +10,8 @@ const tlFmt = new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY
 const usdFmt = new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'USD', minimumFractionDigits: 0, maximumFractionDigits: 2 });
 const tl = v => tlFmt.format(Number(v) || 0);
 const usd = v => usdFmt.format(Number(v) || 0);
+const eurFmt = new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'EUR', minimumFractionDigits: 0, maximumFractionDigits: 2 });
+const eur = v => eurFmt.format(Number(v) || 0);
 
 /** "1.250,50", "1250,5", "4.900" (binlik), "₺2.500 TL" ve "1250.5" girişlerini okur */
 function parseAmount(s) {
@@ -69,6 +71,29 @@ function sharedLabel(item, ctx) {
 }
 
 const sumBy = (arr, f) => arr.reduce((s, x) => s + f(x), 0);
+
+/** O ay için kendi kredi kartı ödeme kaydım */
+const cardFor = (rows, uid, m) => rows.card_payments.find(c => c.owner_id === uid && c.month === m);
+/** Kart ödemesi "taksitler dahil" girildiyse kendi kartımdaki taksit ayrıca sayılmaz */
+const coveredByCard = (i, uid, card) => !!card && card.includes_installments && i.payer_id === uid;
+
+/** Ortak "yarı yarıya" kalemlerden m ayı için kimin kime ne kadar göndereceği (mahsuplaşmış) */
+function settlementFor(rows, members, m) {
+  if (members.length < 2) return null;
+  const [A, B] = members.map(x => x.user_id);
+  const owe = { [A]: 0, [B]: 0 };
+  const lines = [];
+  const add = (it, amount, kind) => {
+    if (!it.shared || it.split !== 'half' || !(it.payer_id in owe) || !amount) return;
+    owe[it.payer_id === A ? B : A] += amount / 2;
+    lines.push({ id: it.id, name: it.name, kind, amount, payer: it.payer_id });
+  };
+  rows.expenses.filter(e => mk(e.date) === m).forEach(e => add(e, Number(e.amount), 'Harcama'));
+  rows.installments.filter(i => inst.active(i, m)).forEach(i => add(i, Number(i.monthly_amount), 'Taksit'));
+  rows.fixed_payments.forEach(f => add(f, Number(f.amount), 'Her ay'));
+  const net = owe[A] - owe[B];
+  return { lines, owe, A, B, from: net > 0 ? A : B, to: net > 0 ? B : A, amount: Math.round(Math.abs(net) * 100) / 100 };
+}
 const pick = a => a[Math.floor(Math.random() * a.length)];
 
 // ---------- Ortak bileşenler ----------
@@ -112,6 +137,24 @@ const Group = ({ title, total, children, action }) => html`
     </div>
     <div class="card">${children}</div>
   </div>`;
+
+/** Başlığına dokununca açılıp kapanan grup; durumu cihazda hatırlanır */
+function FoldGroup({ id, title, count, total, children }) {
+  const key = `tf-fold-${id}`;
+  const [open, setOpen] = useState(() => { try { return localStorage.getItem(key) !== '0'; } catch { return true; } });
+  const toggle = () => {
+    setOpen(!open);
+    try { localStorage.setItem(key, open ? '0' : '1'); } catch { /* yok say */ }
+  };
+  return html`
+    <div class="group">
+      <button class="group-head fold" onClick=${toggle} aria-expanded=${open}>
+        <span><span class=${'chev' + (open ? ' open' : '')}>›</span>${title}${count != null ? ` (${count})` : ''}</span>
+        ${total != null && html`<span>${tl(total)}</span>`}
+      </button>
+      ${open && html`<div class="card">${children}</div>`}
+    </div>`;
+}
 
 const Empty = ({ children }) => html`<div class="empty"><span class="mini">${faceFor(children)}</span>${children}</div>`;
 
@@ -246,13 +289,22 @@ function MonthScreen({ ctx }) {
   const fixed = rows.fixed_payments;
   const exps = rows.expenses.filter(e => mk(e.date) === m).sort((a, b) => (a.date < b.date ? 1 : -1));
 
+  const card = cardFor(rows, uid, m);
+  const cardAmt = card ? Number(card.amount) || 0 : 0;
+  const [cardOpen, setCardOpen] = useState(false);
   const mine = (x, amt) => share(x, Number(amt), uid);
-  const instT = sumBy(insts, i => mine(i, i.monthly_amount));
+  const counted = insts.filter(i => !coveredByCard(i, uid, card));
+  const instT = sumBy(counted, i => mine(i, i.monthly_amount));
   const fixT = sumBy(fixed, f => mine(f, f.amount));
   const expT = sumBy(exps, e => mine(e, e.amount));
-  const total = instT + fixT + expT;
-  const paidT = sumBy(insts.filter(i => isPaid(i, m)), i => mine(i, i.monthly_amount))
+  const total = cardAmt + instT + fixT + expT;
+  const paidT = cardAmt + sumBy(counted.filter(i => isPaid(i, m)), i => mine(i, i.monthly_amount))
     + sumBy(fixed.filter(f => isPaid(f, m)), f => mine(f, f.amount)) + expT;
+
+  // Ayın ilk 10 günü: geçen ayın hesaplaşması bekliyorsa hatırlat
+  const prev = addM(thisMonth(), -1);
+  const settle = m === thisMonth() && new Date().getDate() <= 10 ? settlementFor(rows, ctx.members, prev) : null;
+  const settleDue = settle && settle.amount >= 1 && !rows.settlements.some(x => x.month === prev);
   const income = Number(fin.income) || 0;
   const left = income - total;
 
@@ -279,6 +331,13 @@ function MonthScreen({ ctx }) {
     </header>
     <${Buddy} face=${dailyFace(0)} say=${say} />
 
+    ${settleDue && html`
+      <button class="banner" onClick=${ctx.goSettle}>
+        <span class="banner-icon">💸</span>
+        <span class="grow"><b>Hesaplaşma zamanı</b><span class="sub">${ctx.names[settle.from] || 'Eşin'} → ${ctx.names[settle.to] || 'Eşin'} · ${tl(settle.amount)}</span></span>
+        <span class="pill on">Gör</span>
+      </button>`}
+
     <div class="card hero">
       <div class="muted">Ay sonunda kalan</div>
       <div class=${'big ' + (left < 0 ? 'neg' : 'pos')}>${tl(left)}</div>
@@ -291,11 +350,31 @@ function MonthScreen({ ctx }) {
       </div>
     </div>
 
+    <${Group} title="Kredi kartı" total=${cardAmt}>
+      ${card
+        ? html`<div class="item" onClick=${() => setCardOpen(true)}>
+            <span class="check on">💳</span>
+            <div class="grow"><div class="title">Kart ödemesi</div>
+              <div class="sub">${card.includes_installments ? 'Kendi kartındaki taksitler dahil' : 'Taksitler hariç'}</div></div>
+            <div class="amt">${tl(cardAmt)}</div>
+          </div>`
+        : html`<div class="item" onClick=${() => setCardOpen(true)}>
+            <span class="check warn">!</span>
+            <div class="grow"><div class="title">${monthName(m)} kart ödemeni gir</div>
+              <div class="sub">Ne kadar ödediysen o ayın bütçesinden düşer</div></div>
+            <span class="pill on">Gir</span>
+          </div>`}
+    <//>
+
     <${Group} title="Taksitler" total=${instT}>
-      ${insts.map(i => html`<${PayRow} key=${i.id} title=${i.name}
-        sub=${subOf(`${inst.remaining(i, m)} taksit kaldı · son ${shortMonth(inst.last(i))}`, i)}
-        amount=${mine(i, i.monthly_amount)} full=${Number(i.monthly_amount)} paid=${isPaid(i, m)}
-        onToggle=${() => toggle('installments', i)} onOpen=${() => setForm({ kind: 'installment', item: i })} />`)}
+      ${insts.map(i => coveredByCard(i, uid, card)
+        ? html`<${PayRow} key=${i.id} title=${i.name} paid=${true}
+            sub=${subOf(`💳 karta dahil · ${inst.remaining(i, m)} taksit kaldı`, i)}
+            amount=${mine(i, i.monthly_amount)} onOpen=${() => setForm({ kind: 'installment', item: i })} />`
+        : html`<${PayRow} key=${i.id} title=${i.name}
+            sub=${subOf(`${inst.remaining(i, m)} taksit kaldı · son ${shortMonth(inst.last(i))}`, i)}
+            amount=${mine(i, i.monthly_amount)} full=${Number(i.monthly_amount)} paid=${isPaid(i, m)}
+            onToggle=${() => toggle('installments', i)} onOpen=${() => setForm({ kind: 'installment', item: i })} />`)}
       ${!insts.length && html`<${Empty}>Bu ay taksit yok<//>`}
     <//>
 
@@ -314,7 +393,112 @@ function MonthScreen({ ctx }) {
     <//>
 
     <button class="fab" onClick=${() => setForm({ kind: 'expense' })} aria-label="Ekle">+</button>
-    ${form && html`<${ItemForm} ctx=${ctx} ...${form} month=${m} onClose=${() => setForm(null)} />`}`;
+    ${form && html`<${ItemForm} ctx=${ctx} ...${form} month=${m} onClose=${() => setForm(null)} />`}
+    ${cardOpen && html`<${CardSheet} ctx=${ctx} month=${m} onClose=${() => setCardOpen(false)} />`}`;
+}
+
+// ---------- Kredi kartı ödemesi ----------
+
+function CardSheet({ ctx, month, prompt, onClose }) {
+  const { rows, uid, actions } = ctx;
+  const card = cardFor(rows, uid, month);
+  const lastPref = rows.card_payments.filter(c => c.owner_id === uid).slice(-1)[0];
+  const [amount, setAmount] = useState(Number(card?.amount || 0));
+  const [incl, setIncl] = useState(card ? card.includes_installments : lastPref ? lastPref.includes_installments : true);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function save(value) {
+    if (busy) return;
+    if (value == null && !(amount > 0)) return setErr('Ödediğin tutarı yaz (ödeme yoksa aşağıdan seç)');
+    setBusy(true);
+    const row = { amount: value ?? amount, includes_installments: incl };
+    const ok = card ? await actions.patch('card_payments', card.id, row)
+      : await actions.add('card_payments', { ...row, month, owner_id: uid });
+    if (ok !== false) {
+      if (!card && (value ?? amount) > 0) celebrate('Kart ödemesi girildi!');
+      onClose();
+    }
+    setBusy(false);
+  }
+  async function remove() {
+    if (!confirm('Bu ayın kart ödemesi silinsin mi?')) return;
+    await actions.del('card_payments', card.id);
+    onClose();
+  }
+
+  return html`
+    <${Sheet} title=${`💳 ${monthName(month)}`} onClose=${onClose}
+      right=${html`<button class="link strong" disabled=${busy} onClick=${() => save()}>Kaydet</button>`}>
+      ${prompt && html`<p class="lead">Yeni ay başladı! Bu ay kredi kartına ne kadar ödedin?</p>`}
+      ${err && html`<p class="error">${err}</p>`}
+      <div class="card form">
+        <label class="field"><span>Ödediğin tutar</span><${MoneyInput} value=${amount} onInput=${v => { setAmount(v); setErr(''); }} /></label>
+        <label class="field toggle">
+          <span>Taksitlerim bu ödemenin içinde<small>Kendi kartındaki taksitler o ay ayrıca düşülmez</small></span>
+          <input type="checkbox" checked=${incl} onChange=${e => setIncl(e.target.checked)} />
+        </label>
+      </div>
+      <p class="hint">Bu tutar ${monthName(month)} bütçenden düşer. Sadece sen görürsün.</p>
+      ${!card && html`<button class="primary ghost" disabled=${busy} onClick=${() => save(0)}>Bu ay kart ödemem yok</button>`}
+      ${prompt && !card && html`<button class="link small" onClick=${onClose}>Sonra gireceğim</button>`}
+      ${card && html`<button class="danger" onClick=${remove}>Sil</button>`}
+    <//>`;
+}
+
+// ---------- Hesaplaşma (ayın 5'i) ----------
+
+function SettleView({ ctx }) {
+  const { rows, members, names, uid, actions } = ctx;
+  const [m, setM] = useState(addM(thisMonth(), -1));
+  const s = settlementFor(rows, members, m);
+  const record = rows.settlements.find(x => x.month === m);
+  const who = id => (id === uid ? `${names[id] || 'Sen'} (sen)` : names[id] || 'Eşin');
+
+  async function markSent() {
+    if (!confirm(`${who(s.from)} → ${who(s.to)}: ${tl(s.amount)} gönderildi olarak işaretlensin mi?`)) return;
+    const ok = await actions.add('settlements', { month: m, from_id: s.from, to_id: s.to, amount: s.amount });
+    if (ok !== false) celebrate('Hesaplar kapandı!');
+  }
+
+  return html`
+    <div class="month-nav small">
+      <button class="icon" onClick=${() => setM(addM(m, -1))} aria-label="Önceki ay">‹</button>
+      <h2>${monthName(m)}</h2>
+      <button class="icon" onClick=${() => setM(addM(m, 1))} aria-label="Sonraki ay">›</button>
+    </div>
+    <p class="hint center">${monthName(m)} ortak harcamaları · ${monthName(addM(m, 1))} ayının 5'inde gönderilir</p>
+
+    ${!s ? html`<div class="card"><${Empty}>Eşin aileye katılınca burada hesaplanır<//></div>`
+      : html`
+      <div class="card hero center-text">
+        ${s.amount < 1
+          ? html`<div class="big">🎉</div><div class="muted">Bu ay kimsenin kimseye borcu yok</div>`
+          : html`
+            <div class="muted">${record ? 'Gönderildi ✓' : 'Gönderilecek'}</div>
+            <div class="transfer"><span>${who(s.from)}</span><span class="arrow">→</span><span>${who(s.to)}</span></div>
+            <div class=${'big ' + (record ? 'muted' : 'pos')}>${tl(s.amount)}</div>
+            <div class="rows">
+              <div class="row"><span>${who(s.B)} → ${who(s.A)}</span><b>${tl(s.owe[s.B])}</b></div>
+              <div class="row"><span>${who(s.A)} → ${who(s.B)}</span><b>${tl(s.owe[s.A])}</b></div>
+              <div class="row"><span>Mahsuplaşınca</span><b>${tl(s.amount)}</b></div>
+            </div>
+            ${record
+              ? html`<button class="link small" onClick=${() => confirm('Gönderildi işareti kaldırılsın mı?') && actions.del('settlements', record.id)}>
+                  ${new Date(record.created_at).toLocaleDateString('tr-TR')} tarihinde işaretlendi · Geri al</button>`
+              : html`<button class="primary" onClick=${markSent}>Gönderildi olarak işaretle</button>`}`}
+      </div>
+
+      <${FoldGroup} id="settle-lines" title="Hesaba girenler" count=${s.lines.length}>
+        ${s.lines.map(l => html`
+          <div class="item" key=${l.id}>
+            <div class="grow"><div class="title">${l.name}</div>
+              <div class="sub">${l.kind} · ${who(l.payer)} ödedi · yarısı ${tl(l.amount / 2)}</div></div>
+            <div class="amt">${tl(l.amount)}</div>
+          </div>`)}
+        ${!s.lines.length && html`<${Empty}>Bu ay "yarı yarıya" ortak kalem yok<//>`}
+      <//>
+      <p class="hint">Sadece "Ortak alım · yarı yarıya" işaretli kalemler hesaba girer. Kartı kim ödediyse diğeri yarısını ona gönderir; karşılıklı borçlar birbirinden düşülür.</p>`}`;
 }
 
 // ---------- Ödemeler (taksitler + sabit) ----------
@@ -340,7 +524,8 @@ function InstRow({ i, ctx, onOpen }) {
 
 function PaymentsScreen({ ctx }) {
   const { rows, uid } = ctx;
-  const [seg, setSeg] = useState('inst');
+  const [seg, setSegState] = useState(() => { try { return localStorage.getItem('tf-pay-seg') || 'inst'; } catch { return 'inst'; } });
+  const setSeg = v => { setSegState(v); try { localStorage.setItem('tf-pay-seg', v); } catch { /* yok say */ } };
   const [form, setForm] = useState(null);
   const now = thisMonth();
 
@@ -357,21 +542,23 @@ function PaymentsScreen({ ctx }) {
     <${Buddy} face=${dailyFace(1)} say=${live.length
       ? `${live.length} taksit sürüyor, ilki ${shortMonth(inst.last(live[0]))} ayında bitiyor! 💪`
       : 'Hiç taksit yok, oh be! 😌'} />
-    <${Seg} value=${seg} onChange=${setSeg} options=${[['inst', 'Taksitler'], ['fixed', 'Her ay olanlar']]} />
-    ${seg === 'inst' ? html`
+    <${Seg} value=${seg} onChange=${setSeg} options=${[['inst', 'Taksitler'], ['fixed', 'Her ay'], ['settle', 'Hesaplaşma']]} />
+    ${seg === 'settle' ? html`<${SettleView} ctx=${ctx} />` : seg === 'inst' ? html`
       <div class="card rows">
         <div class="row"><span>Bu ayki taksitlerin</span><b>${tl(monthly)}</b></div>
         <div class="row"><span>Kalan toplam taksit borcun</span><b class="warn">${tl(debt)}</b></div>
       </div>
-      <${Group} title="Şahsi">
+      <${FoldGroup} id="inst-own" title="Şahsi" count=${live.filter(i => !i.shared).length}
+        total=${sumBy(live.filter(i => !i.shared && inst.active(i, now)), i => Number(i.monthly_amount))}>
         ${live.filter(i => !i.shared).map(i => html`<${InstRow} key=${i.id} i=${i} ctx=${ctx} onOpen=${() => open('installment', i)} />`)}
         ${!live.some(i => !i.shared) && html`<${Empty}>Şahsi taksit yok<//>`}
       <//>
-      <${Group} title="Ortak">
+      <${FoldGroup} id="inst-shared" title="Ortak" count=${live.filter(i => i.shared).length}
+        total=${sumBy(live.filter(i => i.shared && inst.active(i, now)), i => share(i, Number(i.monthly_amount), uid))}>
         ${live.filter(i => i.shared).map(i => html`<${InstRow} key=${i.id} i=${i} ctx=${ctx} onOpen=${() => open('installment', i)} />`)}
         ${!live.some(i => i.shared) && html`<${Empty}>Ortak taksit yok<//>`}
       <//>
-      ${done.length > 0 && html`<${Group} title="Bitenler">
+      ${done.length > 0 && html`<${FoldGroup} id="inst-done" title="Bitenler" count=${done.length}>
         ${done.map(i => html`<${InstRow} key=${i.id} i=${i} ctx=${ctx} onOpen=${() => open('installment', i)} />`)}
       <//>`}
     ` : html`
@@ -382,7 +569,7 @@ function PaymentsScreen({ ctx }) {
       <//>
       <p class="hint">Bu Ay ekranında her ay ödendi olarak işaretleyebilirsin.</p>
     `}
-    <button class="fab" onClick=${() => setForm({ kind: seg === 'inst' ? 'installment' : 'fixed' })} aria-label="Ekle">+</button>
+    ${seg !== 'settle' && html`<button class="fab" onClick=${() => setForm({ kind: seg === 'inst' ? 'installment' : 'fixed' })} aria-label="Ekle">+</button>`}
     ${form && html`<${ItemForm} ctx=${ctx} ...${form} onClose=${() => setForm(null)} />`}`;
 }
 
@@ -570,6 +757,18 @@ function WishScreen({ ctx }) {
 
 // ---------- Param ----------
 
+/** Güncel kurlar (/api/rates); son alınan değer cihazda saklanır, internet yoksa o gösterilir */
+function useRates() {
+  const [r, setR] = useState(() => { try { return JSON.parse(localStorage.getItem('tf-rates')); } catch { return null; } });
+  useEffect(() => {
+    fetch('./api/rates')
+      .then(x => (x.ok ? x.json() : Promise.reject(new Error(x.status))))
+      .then(d => { setR(d); try { localStorage.setItem('tf-rates', JSON.stringify(d)); } catch { /* yok say */ } })
+      .catch(() => {});
+  }, []);
+  return r;
+}
+
 function MoneyScreen({ ctx }) {
   const { fin, saveFin, household, members, uid, signOut } = ctx;
   const [f, setF] = useState(fin);
@@ -580,7 +779,13 @@ function MoneyScreen({ ctx }) {
     return () => clearTimeout(t);
   }, [f]);
   const set = k => v => setF({ ...f, [k]: v });
-  const usdTl = Number(f.usd_amount) * Number(f.usd_rate);
+  const rates = useRates();
+  const usdRate = rates?.usd || Number(f.usd_rate) || 0;
+  const usdTl = Math.round(Number(f.usd_amount) * usdRate);
+  const eurTl = Math.round(Number(f.eur_amount || 0) * (rates?.eur || 0));
+  const goldTl = Math.round(Number(f.gold_grams || 0) * (rates?.gold || 0));
+  const totalSaved = Number(f.savings_tl) + usdTl + eurTl + goldTl;
+  const approx = v => (v ? `≈ ${tl(v)}` : '');
 
   async function startShow() {
     if (!confirm('Gösterim moduna geçilsin mi? Gerçek verilerin gizlenir.')) return;
@@ -594,20 +799,28 @@ function MoneyScreen({ ctx }) {
 
   return html`
     <header class="top"><h1>Param</h1></header>
-    <${Buddy} face=${dailyFace(4)} say=${`Kumbaramızda ${tl(Number(f.savings_tl) + usdTl)} var 🐷`} />
+    <${Buddy} face=${dailyFace(4)} say=${`Kumbaramızda ${tl(totalSaved)} var 🐷`} />
     <${Group} title="Gelir">
       <label class="field"><span>Aylık gelir</span><${MoneyInput} value=${f.income} onInput=${set('income')} /></label>
     <//>
     <${Group} title="Kenardaki param">
       <label class="field"><span>TL birikim</span><${MoneyInput} value=${f.savings_tl} onInput=${set('savings_tl')} /></label>
-      <label class="field"><span>Dolar</span><${MoneyInput} value=${f.usd_amount} onInput=${set('usd_amount')} suffix="$" /></label>
-      <label class="field"><span>Dolar kuru</span><${MoneyInput} value=${f.usd_rate} onInput=${set('usd_rate')} /></label>
+      <label class="field"><span>Dolar<small>${approx(usdTl)}</small></span><${MoneyInput} value=${f.usd_amount} onInput=${set('usd_amount')} suffix="$" /></label>
+      <label class="field"><span>Euro<small>${approx(eurTl)}</small></span><${MoneyInput} value=${f.eur_amount} onInput=${set('eur_amount')} suffix="€" /></label>
+      <label class="field"><span>Altın<small>${approx(goldTl)}</small></span><${MoneyInput} value=${f.gold_grams} onInput=${set('gold_grams')} suffix="gr" /></label>
     <//>
-    <p class="hint">Kuru arada bir güncelleyin. Bu bilgileri sadece siz görürsünüz.</p>
+    <p class="hint">${rates
+      ? `Kurlar: $ ${tl(rates.usd)} · € ${tl(rates.eur)} (TCMB ${rates.date || ''}) · gram altın ${tl(rates.gold)}. Bu bilgileri sadece sen görürsün.`
+      : 'Kurlar alınamadı, internet bağlantını kontrol et. Bu bilgileri sadece sen görürsün.'}</p>
     <div class="card hero">
-      ${Number(f.usd_amount) > 0 && html`<div class="row"><span>${usd(f.usd_amount)} karşılığı</span><b>${tl(usdTl)}</b></div>`}
       <div class="muted">Toplam birikim</div>
-      <div class="big">${tl(Number(f.savings_tl) + usdTl)}</div>
+      <div class="big">${tl(totalSaved)}</div>
+      <div class="rows">
+        <div class="row"><span>TL</span><b>${tl(f.savings_tl)}</b></div>
+        ${Number(f.usd_amount) > 0 && html`<div class="row"><span>${usd(f.usd_amount)}</span><b>${tl(usdTl)}</b></div>`}
+        ${Number(f.eur_amount) > 0 && html`<div class="row"><span>${eur(f.eur_amount)}</span><b>${tl(eurTl)}</b></div>`}
+        ${Number(f.gold_grams) > 0 && html`<div class="row"><span>${plain(f.gold_grams)} gr altın</span><b>${tl(goldTl)}</b></div>`}
+      </div>
     </div>
 
     <${Group} title=${household.name}>
@@ -636,6 +849,7 @@ function MoneyScreen({ ctx }) {
 
 /** Eşe gidecek bildirim; şahsi kayıtlar için null (onlar gizli kalır) */
 function notifyText(table, r, who) {
+  if (table === 'settlements') return { title: '💸 Hesaplaşma', body: `${who}: ${monthName(r.month)} için ${tl(r.amount)} gönderildi olarak işaretlendi` };
   if (table === 'wishlist') return { title: '🛋️ Alacaklara eklendi', body: `${who}: ${r.name}${Number(r.price) ? ` · ${tl(r.price)}` : ''}` };
   if (!r.shared) return null;
   if (table === 'expenses') return { title: '🛍️ Yeni ortak harcama', body: `${who}: ${r.name} · ${tl(r.amount)}` };
@@ -813,6 +1027,7 @@ function App() {
   const [rows, setRows] = useState(null);
   const [fin, setFin] = useState(null);
   const [exitingShow, setExitingShow] = useState(false);
+  const [askCard, setAskCard] = useState(false);
   const [tab, setTab] = useState(() => { try { return localStorage.getItem('tf-tab') || 'month'; } catch { return 'month'; } });
 
   async function reload() {
@@ -846,6 +1061,19 @@ function App() {
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, [phase]);
   useEffect(() => { try { localStorage.setItem('tf-tab', tab); } catch { /* yok say */ } }, [tab]);
+
+  // Her açılışta: bu ayın kart ödemesi girilmediyse sor ("Sonra gireceğim" sadece bu açılış için)
+  useEffect(() => {
+    if (phase !== 'ready' || SHOW || !rows) return;
+    const m = thisMonth();
+    let asked = false;
+    try { asked = sessionStorage.getItem(`tf-card-asked-${m}`) === '1'; } catch { /* yok say */ }
+    if (!asked && !cardFor(rows, user.id, m)) setAskCard(true);
+  }, [phase, rows === null]);
+  const closeCardAsk = () => {
+    setAskCard(false);
+    try { sessionStorage.setItem(`tf-card-asked-${thisMonth()}`, '1'); } catch { /* yok say */ }
+  };
 
   async function guard(fn) {
     try { await fn(); return true; } catch (err) { alert('Kaydedilemedi: ' + err.message); reload().catch(() => {}); return false; }
@@ -887,7 +1115,8 @@ function App() {
   if (phase === 'auth') return html`<${AuthScreen} onDone=${() => { setPhase('loading'); boot(); }} />`;
   if (phase === 'setup') return html`<${SetupScreen} onDone=${() => { setPhase('loading'); boot(); }} />`;
 
-  const ctx = { uid: user.id, rows, actions, members, names, fin, saveFin, household, signOut, askExitShow: () => setExitingShow(true) };
+  const ctx = { uid: user.id, rows, actions, members, names, fin, saveFin, household, signOut, askExitShow: () => setExitingShow(true),
+    goSettle: () => { try { localStorage.setItem('tf-pay-seg', 'settle'); } catch { /* yok say */ } setTab('payments'); window.scrollTo(0, 0); } };
   const Screen = { month: MonthScreen, payments: PaymentsScreen, shop: ShoppingScreen, wish: WishScreen, money: MoneyScreen }[tab];
 
   return html`
@@ -900,6 +1129,7 @@ function App() {
     <${Walker} />
     <${Party} />
     ${exitingShow && html`<${ExitShowSheet} onClose=${() => setExitingShow(false)} />`}
+    ${askCard && html`<${CardSheet} ctx=${ctx} month=${thisMonth()} prompt=${true} onClose=${closeCardAsk} />`}
     <nav class="tabs">
       ${TABS.map(([id, label, icon]) => html`
         <button class=${tab === id ? 'on' : ''} onClick=${() => { setTab(id); window.scrollTo(0, 0); }}>

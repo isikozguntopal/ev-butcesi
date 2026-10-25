@@ -16,10 +16,55 @@ webpush.setVapidDetails(
   Deno.env.get('VAPID_PRIVATE_KEY')!,
 );
 
+// deno-lint-ignore no-explicit-any
+type Admin = any;
+
+async function sendTo(admin: Admin, userIds: string[], title: string, body: string) {
+  if (!userIds.length) return 0;
+  const { data: subs } = await admin.from('push_subscriptions').select('*').in('user_id', userIds);
+  const payload = JSON.stringify({ title: title.slice(0, 80), body: body.slice(0, 200) });
+  let sent = 0;
+  await Promise.all((subs ?? []).map(async (s: { id: string; endpoint: string; p256dh: string; auth: string }) => {
+    try {
+      await webpush.sendNotification({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, payload);
+      sent++;
+    } catch (err) {
+      // Telefon aboneliği bitmişse kaydı temizle
+      const code = (err as { statusCode?: number })?.statusCode;
+      if (code === 404 || code === 410) await admin.from('push_subscriptions').delete().eq('id', s.id);
+    }
+  }));
+  return sent;
+}
+
+/** Zamanlanmış hatırlatmalar (pg_cron her ayın 1, 3 ve 5'inde çağırır) */
+async function monthly(admin: Admin) {
+  const tr = new Date(Date.now() + 3 * 3600_000); // Türkiye saati
+  const day = tr.getUTCDate();
+  const month = `${tr.getUTCFullYear()}-${String(tr.getUTCMonth() + 1).padStart(2, '0')}`;
+  const { data: members } = await admin.from('members').select('user_id');
+  const all: string[] = (members ?? []).map((m: { user_id: string }) => m.user_id);
+  let sent = 0;
+  if (day <= 3) {
+    const { data: done } = await admin.from('card_payments').select('owner_id').eq('month', month);
+    const doneIds = new Set((done ?? []).map((d: { owner_id: string }) => d.owner_id));
+    sent += await sendTo(admin, all.filter(id => !doneIds.has(id)),
+      '💳 Kredi kartı ödemesi', 'Bu ay kartına ne kadar ödediğini girmeyi unutma 🐷');
+  }
+  if (day === 5) {
+    sent += await sendTo(admin, all, '💸 Hesaplaşma günü', 'Geçen ayın ortak harcamalarına göre kimin kime ne atacağı hazır 🐻');
+  }
+  return { day, sent };
+}
+
 Deno.serve(async req => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
 
   const url = Deno.env.get('SUPABASE_URL')!;
+  const cronSecret = Deno.env.get('CRON_SECRET');
+  if (cronSecret && req.headers.get('x-cron-secret') === cronSecret) {
+    return json(await monthly(createClient(url, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)));
+  }
   const asUser = createClient(url, Deno.env.get('SUPABASE_ANON_KEY')!, {
     global: { headers: { Authorization: req.headers.get('Authorization') ?? '' } },
   });
@@ -36,19 +81,5 @@ Deno.serve(async req => {
   const ids = (others ?? []).map(o => o.user_id);
   if (!ids.length) return json({ sent: 0 });
 
-  const { data: subs } = await admin.from('push_subscriptions').select('*').in('user_id', ids);
-  const payload = JSON.stringify({ title: String(title ?? 'Aile Bütçesi').slice(0, 80), body: String(body ?? '').slice(0, 200) });
-
-  let sent = 0;
-  await Promise.all((subs ?? []).map(async s => {
-    try {
-      await webpush.sendNotification({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, payload);
-      sent++;
-    } catch (err) {
-      // Telefon aboneliği bitmişse kaydı temizle
-      const code = (err as { statusCode?: number })?.statusCode;
-      if (code === 404 || code === 410) await admin.from('push_subscriptions').delete().eq('id', s.id);
-    }
-  }));
-  return json({ sent });
+  return json({ sent: await sendTo(admin, ids, String(title ?? 'Aile Bütçesi'), String(body ?? '')) });
 });
