@@ -414,11 +414,10 @@ function MonthScreen({ ctx }) {
   const cardSpend = sumBy(cardItems(rows, uid, m), x => x.amount);
   const [limitOpen, setLimitOpen] = useState(false);
   const cardLimit = Number(fin.card_limit) || 0;
-  // Kullanılan limit: bankadan girilen tutar + bilgi tarihinden sonra girilen kart harcamaları − o tarihten sonraki kart ödemeleri
+  // Kullanılan limit: bankadan girilen tutar + bilgi tarihinden sonra girilen kart harcamaları − bilgi tarihinden sonra girilen kart ödemeleri
   const usedAt = fin.card_used_at ? String(fin.card_used_at).slice(0, 10) : null;
-  const usedMonth = usedAt ? usedAt.slice(0, 7) : null;
   const newSpend = usedAt ? sumBy(rows.expenses.filter(e => e.payer_id === uid && onCardItem(e, 'expenses') && String(e.date).slice(0, 10) > usedAt), e => Number(e.amount) || 0) : 0;
-  const paidSince = usedMonth ? sumBy((rows.card_payments || []).filter(c => c.owner_id === uid && c.month > usedMonth), c => Number(c.amount) || 0) : 0;
+  const paidSince = usedAt ? sumBy((rows.card_payments || []).filter(c => c.owner_id === uid && c.created_at && new Date(c.created_at).toLocaleDateString('sv-SE') > usedAt), c => Number(c.amount) || 0) : 0;
   const cardUsed = (Number(fin.card_used) || 0) + newSpend - paidSince;
   const cardRemain = Math.max(0, (Number(fin.card_debt) || 0) - cardAmt);
   const paidT = cardAmt + sumBy(counted.filter(i => isPaid(i, m)), i => mine(i, i.monthly_amount))
