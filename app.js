@@ -86,7 +86,7 @@ const cardFor = (rows, uid, m) => rows.card_payments.find(c => c.owner_id === ui
  *  Eşin kartındaki taksitler sayılmaya devam eder (payı ayın 5'inde eşe gönderilir). */
 /** Kayıt kartla mı ödeniyor? Taksitlerde varsayılan kart, harcama ve "her ay"da varsayılan nakit. */
 const onCardItem = (it, table = 'installments') => (table === 'installments' ? it.on_card !== false : it.on_card === true);
-const coveredByCard = (it, uid, card, table = 'installments') => !!card && it.payer_id === uid && onCardItem(it, table);
+const coveredByCard = (it, uid, card, table = 'installments') => it.payer_id === uid && onCardItem(it, table);
 /** O ay kart ödememe dahil olan kayıtlar (kendi kartım) */
 function cardItems(rows, uid, m) {
   return [
@@ -395,6 +395,9 @@ function MonthScreen({ ctx }) {
   const fixT = sumBy(fixedCounted, f => mine(f, f.amount));
   const expT = sumBy(expsCounted, e => mine(e, e.amount));
   const total = cardAmt + instT + fixT + expT;
+  // Kart harcaması: kartta bu ay yapılan tüm harcamalar (tam tutar). Nakit bakiyeden düşmez; kart ödemesiyle borçtan düşer.
+  const cardSpend = sumBy(cardItems(rows, uid, m), x => x.amount);
+  const cardDebt = cardSpend - cardAmt;
   const paidT = cardAmt + sumBy(counted.filter(i => isPaid(i, m)), i => mine(i, i.monthly_amount))
     + sumBy(fixedCounted.filter(f => isPaid(f, m)), f => mine(f, f.amount))
     + sumBy(expsCounted.filter(e => isPaid(e, m)), e => mine(e, e.amount));
@@ -462,16 +465,16 @@ function MonthScreen({ ctx }) {
       </button>`}
 
     <div class="card hero">
-      <div class="muted">Ay sonunda kalan</div>
+      <div class="muted">Ay sonunda kalan (nakit bakiye)</div>
       <div class=${'big ' + (left < 0 ? 'neg' : 'pos')}>${tl(left)}</div>
       ${!income && html`<div class="sub">Ben → Birikimim bölümüne aylık gelirini yaz</div>`}
       <div class="rows">
         <div class="row"><span>Gelir</span><b>${tl(income)}</b></div>
-        <div class="row"><span>Kredi kartı ödemesi</span><b>${card ? tl(cardAmt) : html`<span class="warn">Girilmedi</span>`}</b></div>
-        <div class="row"><span>Diğer ödemeler</span><b>${tl(total - cardAmt)}</b></div>
-        <div class="row"><span>Bu ay toplam ödeme</span><b>${tl(total)}</b></div>
-        <div class="row"><span>Ödendi</span><b class="muted">${tl(paidT)}</b></div>
+        <div class="row"><span>Ödendi / bu ay toplam</span><b><span class="muted">${tl(paidT)}</span> / ${tl(total)}</b></div>
         <div class="row"><span>Henüz ödenmedi</span><b class="warn">${tl(total - paidT)}</b></div>
+        <div class="row"><span>Kredi kartı ödemesi</span><b>${card ? tl(cardAmt) : html`<span class="warn">Girilmedi</span>`}</b></div>
+        <div class="row"><span>Kartta bu ay harcadığın</span><b>${tl(cardSpend)}</b></div>
+        <div class="row"><span>Kart borcu (ödenmemiş)</span><b class=${cardDebt > 0 ? 'warn' : 'pos'}>${tl(cardDebt)}</b></div>
       </div>
     </div>
 
