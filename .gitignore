@@ -5,3 +5,4 @@ secrets/
 .env
 .env.*
 config.js
+supabase/.temp/
