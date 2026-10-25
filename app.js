@@ -375,7 +375,9 @@ function MonthScreen({ ctx }) {
       ${!income && html`<div class="sub">Param sekmesinden aylık gelirini gir</div>`}
       <div class="rows">
         <div class="row"><span>Gelir</span><b>${tl(income)}</b></div>
-        <div class="row"><span>Bu ay toplam ödeme${cardAmt > 0 ? html`<small class="muted"> (${tl(cardAmt)} kredi kartı)</small>` : ''}</span><b>${tl(total)}</b></div>
+        <div class="row"><span>Kredi kartı ödemesi</span><b>${card ? tl(cardAmt) : html`<span class="warn">Girilmedi</span>`}</b></div>
+        <div class="row"><span>Diğer ödemeler</span><b>${tl(total - cardAmt)}</b></div>
+        <div class="row"><span>Bu ay toplam ödeme</span><b>${tl(total)}</b></div>
         <div class="row"><span>Ödendi</span><b class="muted">${tl(paidT)}</b></div>
         <div class="row"><span>Henüz ödenmedi</span><b class="warn">${tl(total - paidT)}</b></div>
       </div>
