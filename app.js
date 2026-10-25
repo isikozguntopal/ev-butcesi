@@ -136,6 +136,9 @@ const pick = a => a[Math.floor(Math.random() * a.length)];
 /** Hesaplaşmada açılacak ay: içinde bulunulan ay. Ayın ilk 10 günü geçen ayın
  *  hesaplaşması hâlâ bekliyorsa (gönderilmedi/alınmadı) önce geçen ay. */
 function defaultSettleMonth(rows, members) {
+  // Gönderildi/alındı işaretlenmiş en son hesaplaşmanın bir sonraki ayı açılır
+  const done = (rows.settlements || []).filter(x => x.sent_at || x.received_at).map(x => x.month).sort();
+  if (done.length) return addM(done[done.length - 1], 1);
   const now = thisMonth();
   const prev = addM(now, -1);
   if (new Date().getDate() > 10) return now;
@@ -323,22 +326,25 @@ function ItemForm({ ctx, kind: initialKind, item, preset, month, onClose, onSave
           onInput=${e => { setName(e.target.value); setErr(''); }} onChange=${e => setName(e.target.value)} /></label>
         <label class="field"><span>${kind === 'installment' ? 'Aylık taksit' : 'Tutar'}</span><${MoneyInput} value=${amount} onInput=${v => { setAmount(v); setErr(''); }} /></label>
         ${kind === 'expense' && html`
-          <label class="field"><span>Tarih</span><input type="date" value=${date} onInput=${e => setDate(e.target.value || date)} onChange=${e => setDate(e.target.value || date)} /></label>`}
+          <label class="field"><span>Harcama tarihi<small>Alışverişi yaptığın gün. Hangi aya yazılacağını bu belirler.</small></span><input type="date" value=${date} onInput=${e => setDate(e.target.value || date)} onChange=${e => setDate(e.target.value || date)} /></label>`}
         ${kind === 'installment' && html`
           <label class="field"><span>İlk taksit</span><input type="month" value=${first} onInput=${e => setFirst(e.target.value || first)} onChange=${e => setFirst(e.target.value || first)} /></label>
           <label class="field"><span>Son taksit</span><input type="month" value=${last} onInput=${pickLast} onChange=${pickLast} /></label>`}
       </div>
       ${showMethod && html`
         <div class="field col method">
-          <span>Ödeme şekli</span>
-          <${Seg} value=${method} onChange=${v => { setMethod(v); setErr(''); }}
-            options=${kind === 'expense'
-              ? [['card', '💳 Kart'], ['cash', '💵 Nakit'], ['unpaid', '⏳ Ödenmedi']]
-              : [['card', '💳 Kart'], ['cash', '💵 Nakit / havale']]} />
+          <span>${kind === 'expense' ? 'Parayı şimdi ödediniz mi?' : 'Nasıl ödeniyor?'}</span>
+          ${kind === 'expense' && html`
+            <${Seg} value=${method === 'unpaid' ? 'no' : 'yes'}
+              onChange=${v => { setMethod(v === 'no' ? 'unpaid' : (method === 'unpaid' ? 'cash' : method)); setErr(''); }}
+              options=${[['yes', 'Evet, ödedim'], ['no', 'Henüz değil']]} />`}
+          ${method !== 'unpaid' && html`
+            <${Seg} value=${method} onChange=${v => { setMethod(v); setErr(''); }}
+              options=${[['card', '💳 Kredi kartıyla'], ['cash', kind === 'expense' ? '💵 Nakit / havale' : '💵 Nakit / havale']]} />`}
           <small class="muted">${{
-            card: 'Kart ödemeni girince toplama ayrıca eklenmez ve otomatik ödendi olur.',
-            cash: kind === 'expense' ? 'Hemen ödendi olarak işaretlenir.' : 'Her ay toplama girer, tikini sen atarsın.',
-            unpaid: 'Tiksiz kalır (ör. eşine göndereceğin para); gönderince tikle.',
+            card: 'Bakiyenden hemen düşer. Ay başında kart ödemesini girince kart ödemesinin içine geçer ve otomatik ödendi olur.',
+            cash: kind === 'expense' ? 'Bakiyenden hemen düşer ve ödendi olarak işaretlenir.' : 'Her ay bakiyenden düşer; ödediğinde tikini sen atarsın.',
+            unpaid: 'Bakiyenden düşer ama "henüz ödenmedi" olarak kalır. Ödediğinde tikle.',
           }[method]}</small>
         </div>`}
       ${kind === 'installment' && html`
@@ -407,6 +413,10 @@ function MonthScreen({ ctx }) {
     const p = it.paid_months || [];
     const key = paidKey(m, uid);
     const was = isPaid(it, m);
+    if (was && (it.paid_months || []).includes(`${key}:settled`)) {
+      alert('Bu ödeme hesaplaşmada gönderildi, işareti kaldırılamaz.');
+      return;
+    }
     // Eşin kartından ödenen ortak harcamada tik = payımı ona gönderdim (ayın 5'ine girmez)
     if (!was && table === 'expenses' && it.shared && it.split === 'half' && it.payer_id !== uid) {
       const payerName = ctx.names[it.payer_id] || 'eşin';
@@ -430,7 +440,8 @@ function MonthScreen({ ctx }) {
     : allPaid ? 'Bu ayın bütün ödemeleri tamam, harikasınız! 🎉'
     : left >= 0 ? `Bu ay ${tl(left)} artıyor, süpersiniz! ✨`
     : `Eyvah, ${tl(-left)} eksideyiz 🙈`;
-  const subOf = (extra, it) => [extra, sharedLabel(it, ctx), partnerTag(it)].filter(Boolean).join(' · ');
+  const settledTag = it => ((it.paid_months || []).includes(`${paidKey(m, uid)}:settled`) ? 'hesaplaşmada gönderildi 🔒' : null);
+  const subOf = (extra, it) => [extra, sharedLabel(it, ctx), partnerTag(it), settledTag(it)].filter(Boolean).join(' · ');
 
   return html`
     <header class="top">
