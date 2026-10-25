@@ -23,6 +23,7 @@ function parseAmount(s) {
 }
 const plain = v => (Number(v) ? Number(v).toLocaleString('tr-TR', { useGrouping: false, maximumFractionDigits: 2 }) : '');
 
+const CATS = ['Market', 'Yeme-içme', 'Ulaşım', 'Ev ve faturalar', 'Kira', 'Giyim', 'Sağlık', 'Eğlence', 'Eğitim', 'Teknoloji', 'Diğer'];
 const AYLAR = ['Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran', 'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'];
 const pad = n => String(n).padStart(2, '0');
 const thisMonth = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`; };
@@ -82,6 +83,18 @@ const sumBy = (arr, f) => arr.reduce((s, x) => s + f(x), 0);
 
 /** O ay için kendi kredi kartı ödeme kaydım */
 const cardFor = (rows, uid, m) => rows.card_payments.find(c => c.owner_id === uid && c.month === m);
+/** O aya devredilen nakit bakiye (manuel karar; 0 = devretme) */
+const carryFor = (rows, uid, m) => (rows.carryovers || []).find(c => c.owner_id === uid && c.month === m);
+/** Bir ayın nakit bakiyesi (devir dahil). Ekim 2026 öncesi veriler güvenilir değil, hesaba katılmaz. */
+function nakitLeftFor(rows, uid, m, income) {
+  const card = cardFor(rows, uid, m);
+  const cardAmt = card ? Number(card.amount) || 0 : 0;
+  const instT = sumBy(rows.installments.filter(i => inst.active(i, m) && !coveredByCard(i, uid, card)), i => share(i, Number(i.monthly_amount), uid));
+  const fixT = sumBy(rows.fixed_payments.filter(f => !coveredByCard(f, uid, card, 'fixed_payments')), f => share(f, Number(f.amount), uid));
+  const expT = sumBy(rows.expenses.filter(e => mk(e.date) === m && !coveredByCard(e, uid, card, 'expenses')), e => share(e, Number(e.amount), uid));
+  const c = carryFor(rows, uid, m);
+  return income - (cardAmt + instT + fixT + expT) + (c ? Number(c.amount) || 0 : 0);
+}
 /** O ay kart ödemesi girildiyse, benim kartımdan ödenen taksit ödemenin içindedir; ayrıca sayılmaz.
  *  Eşin kartındaki taksitler sayılmaya devam eder (payı ayın 5'inde eşe gönderilir). */
 /** Kayıt kartla mı ödeniyor? Taksitlerde varsayılan kart, harcama ve "her ay"da varsayılan nakit. */
@@ -261,6 +274,7 @@ function ItemForm({ ctx, kind: initialKind, item, preset, month, onClose, onSave
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [methodPick, setMethod] = useState(null);
+  const [category, setCategory] = useState(src.category || 'Diğer');
   const formRef = useRef(null);
 
   // Son taksit ilk taksitten önceye düşerse (ör. Ocak seçilip yıl değişmemişse) bir sonraki yıla al
@@ -294,7 +308,7 @@ function ItemForm({ ctx, kind: initialKind, item, preset, month, onClose, onSave
     setBusy(true);
     // Eksi tutarlı düzeltmeler (bakiye eşitleme) düzenlenirken işaret korunur
     const amount_ = item && Number(item.amount ?? item.monthly_amount) < 0 ? -amt : amt;
-    const row = { name: nm, shared, split: shared ? split : 'half', payer_id: shared ? payer : uid };
+    const row = { name: nm, shared, split: shared ? split : 'half', payer_id: shared ? payer : uid, category };
     if (kind === 'expense') Object.assign(row, { amount: amount_, date });
     if (kind === 'fixed') Object.assign(row, { amount: amount_ });
     if (kind === 'installment') Object.assign(row, { monthly_amount: amount_, first_month: `${first}-01`, last_month: `${last}-01` });
@@ -325,6 +339,7 @@ function ItemForm({ ctx, kind: initialKind, item, preset, month, onClose, onSave
         <label class="field"><input data-name placeholder=${kind === 'fixed' ? 'Ne için? (ör. Kira)' : 'Ne aldın?'} value=${name}
           onInput=${e => { setName(e.target.value); setErr(''); }} onChange=${e => setName(e.target.value)} /></label>
         <label class="field"><span>${kind === 'installment' ? 'Aylık taksit' : 'Tutar'}</span><${MoneyInput} value=${amount} onInput=${v => { setAmount(v); setErr(''); }} /></label>
+        <label class="field"><span>Kategori</span><select value=${category} onChange=${e => setCategory(e.target.value)}>${CATS.map(c => html`<option value=${c}>${c}</option>`)}</select></label>
         ${kind === 'expense' && html`
           <label class="field"><span>Harcama tarihi<small>Alışverişi yaptığın gün. Hangi aya yazılacağını bu belirler.</small></span><input type="date" value=${date} onInput=${e => setDate(e.target.value || date)} onChange=${e => setDate(e.target.value || date)} /></label>`}
         ${kind === 'installment' && html`
@@ -410,7 +425,9 @@ function MonthScreen({ ctx }) {
   const settle = m === thisMonth() && new Date().getDate() <= 10 ? settlementFor(rows, ctx.members, prev) : null;
   const settleDue = settle && settle.amount >= 1 && !rows.settlements.some(x => x.month === prev);
   const income = Number(fin.income) || 0;
-  const left = income - total;
+  const carry = carryFor(rows, uid, m);
+  const carryAmt = carry ? Number(carry.amount) || 0 : 0;
+  const left = income - total + carryAmt;
 
   const toggle = (table, it) => {
     const p = it.paid_months || [];
@@ -470,6 +487,7 @@ function MonthScreen({ ctx }) {
       ${!income && html`<div class="sub">Ben → Birikimim bölümüne aylık gelirini yaz</div>`}
       <div class="rows">
         <div class="row"><span>Gelir</span><b>${tl(income)}</b></div>
+        ${carryAmt !== 0 && html`<div class="row"><span>Önceki aydan devir</span><b>${tl(carryAmt)}</b></div>`}
         <div class="row"><span>Ödendi / bu ay toplam</span><b><span class="muted">${tl(paidT)}</span> / ${tl(total)}</b></div>
         <div class="row"><span>Henüz ödenmedi</span><b class="warn">${tl(total - paidT)}</b></div>
         <div class="row"><span>Kredi kartı ödemesi</span><b>${card ? tl(cardAmt) : html`<span class="warn">Girilmedi</span>`}</b></div>
@@ -827,6 +845,14 @@ function ReportView({ ctx }) {
   const topExp = Object.values(byName).sort((a, b) => b.value - a.value).slice(0, 6)
     .map(x => ({ ...x, sub: x.n > 1 ? `${x.n} kez` : '' }));
 
+  const byCat = {};
+  months.forEach(m => {
+    rows.expenses.filter(e => mk(e.date) === m).forEach(e => { const k = e.category || 'Diğer'; byCat[k] = (byCat[k] || 0) + mine(e, e.amount); });
+    rows.installments.filter(i => inst.active(i, m)).forEach(i => { const k = i.category || 'Diğer'; byCat[k] = (byCat[k] || 0) + mine(i, i.monthly_amount); });
+  });
+  rows.fixed_payments.forEach(f => { const k = f.category || 'Diğer'; byCat[k] = (byCat[k] || 0) + mine(f, f.amount) * months.length; });
+  const catItems = Object.entries(byCat).map(([label, value]) => ({ label, value })).filter(x => x.value > 0).sort((a, b) => b.value - a.value);
+
   const sharedT = sumBy(months, m => sumBy(rows.expenses.filter(e => e.shared && mk(e.date) === m), e => mine(e, e.amount))
     + sumBy(rows.installments.filter(i => i.shared && inst.active(i, m)), i => mine(i, i.monthly_amount))
     + sumBy(rows.fixed_payments.filter(f => f.shared), f => mine(f, f.amount)));
@@ -848,7 +874,10 @@ function ReportView({ ctx }) {
         <${Bars} items=${[{ label: 'Ortak kalemlerdeki payın', value: sharedT }, { label: 'Şahsi (kart ödemesi dahil)', value: grand - sharedT }]} total=${grand} />
       <//>`}
     ${span > 1 && html`
-      <${FoldGroup} id="rep-months" title="Aylara göre">
+      <${FoldGroup} id="rep-cat" title="Kategoriye göre">
+      ${catItems.length ? html`<${Bars} items=${catItems} total=${sumBy(catItems, x => x.value)} />` : html`<${Empty}>Henüz kategorili kayıt yok<//>`}
+    <//>
+    <${FoldGroup} id="rep-months" title="Aylara göre">
         <${Bars} items=${perMonth.map(x => ({ label: monthName(x.m), value: x.total }))} />
       <//>`}
     <${FoldGroup} id="rep-inst" title="En büyük taksitler (aylık)">
@@ -1140,6 +1169,7 @@ function BenScreen({ ctx }) {
 
   if (page === 'savings') return html`${back('Birikimim')}<${SavingsView} f=${f} setF=${setF} rates=${rates} totals=${{ usdTl, eurTl, goldTl, totalSaved }} />`;
   if (page === 'report') return html`${back('Raporlar')}<${ReportView} ctx=${ctx} />`;
+  if (page === 'goals') return html`${back('Hedefler')}<${GoalsView} ctx=${ctx} />`;
   if (page === 'settings') return html`${back('Ayarlar')}<${SettingsView} ctx=${ctx} />`;
 
   const item = (id, icon, title, sub) => html`
@@ -1154,7 +1184,8 @@ function BenScreen({ ctx }) {
     <${Buddy} face=${dailyFace(4)} say=${`Kumbaramızda ${tl(totalSaved)} var 🐷`} />
     <div class="card">
       ${item('savings', '💰', 'Birikimim', `${tl(totalSaved)} · gelir ${tl(f.income)}`)}
-      ${item('report', '📊', 'Raporlar', 'Para nereye gidiyor, en büyük taksitler')}
+      ${item('goals', '🎯', 'Hedefler', `${(rows.goals || []).length} hedef · ${tl(sumBy(rows.goals || [], g => Number(g.saved)))} biriktirildi`)}
+      ${item('report', '📊', 'Raporlar', 'Para nereye gidiyor, kategoriler, en büyük taksitler')}
       ${item('settings', '⚙️', 'Ayarlar', 'Aile, bildirimler, gösterim modu')}
     </div>
     ${SHOW && html`<p class="hint center">🎭 Gösterim modundasın: örnek veriler görünüyor.</p>`}`;
@@ -1195,6 +1226,7 @@ const NOTIFY_TYPES = [
   ['settle', 'Hesaplaşma hareketleri', 'Eşin "Gönderdim" ya da "Parayı aldım" deyince'],
   ['card', 'Kart ödemesi hatırlatması', "Ayın 1'i ve 3'ü, kart ödemeni girmediysen"],
   ['payday', 'Hesaplaşma günü', "Her ayın 5'i, 09:00"],
+  ['daily', '22:00 hatırlatması', 'Bugün harcama girmediysen her akşam'],
 ];
 
 function SettingsView({ ctx }) {
@@ -1243,6 +1275,83 @@ function SettingsView({ ctx }) {
       : 'Gerçek verilerin gizlenir, uydurma verilerle dolu bir örnek aile görünür. Çıkmak için şifren sorulur.'}</p>
     ${DEMO && !SHOW && html`<p class="hint">Deneme modundasınız: veriler sadece bu cihazda. Supabase bağlanınca iki telefon eşitlenir.</p>`}
     ${!SHOW && html`<button class="danger" onClick=${signOut}>${DEMO ? 'Deneme verilerini sıfırla' : 'Çıkış yap'}</button>`}`;
+}
+
+// ---------- Hedefler ----------
+
+function GoalsView({ ctx }) {
+  const goals = ctx.rows.goals || [];
+  const [editing, setEditing] = useState(null);
+  return html`
+    <${Group} title="Hedeflerim">
+      ${goals.map(g => {
+        const pct = g.target ? Math.min(100, Math.round((Number(g.saved) / Number(g.target)) * 100)) : 0;
+        return html`
+          <button class="item tall" key=${g.id} onClick=${() => setEditing({ item: g })}>
+            <div class="grow">
+              <div class="line"><span class="title">${g.name}</span><span>%${pct}</span></div>
+              <div class="bar"><div style=${`width:${pct}%`} class=${pct >= 100 ? 'full' : ''}></div></div>
+              <div class="sub">${tl(g.saved)} / ${tl(g.target)}</div>
+            </div>
+          </button>`;
+      })}
+      ${!goals.length && html`<${Empty}>Tatil, araba, ev… bir hedef ekle<//>`}
+    <//>
+    <button class="primary ghost" onClick=${() => setEditing({})}>+ Yeni hedef</button>
+    <p class="hint">Hedefe biriken tutarı kendin güncelle. Sadece sen görürsün.</p>
+    ${editing && html`<${GoalForm} ctx=${ctx} item=${editing.item} onClose=${() => setEditing(null)} />`}`;
+}
+
+function GoalForm({ ctx, item, onClose }) {
+  const [name, setName] = useState(item?.name || '');
+  const [target, setTarget] = useState(Number(item?.target || 0));
+  const [saved, setSaved] = useState(Number(item?.saved || 0));
+  async function save() {
+    if (!name.trim() || !(target > 0)) return;
+    const row = { name: name.trim(), target, saved };
+    const ok = item ? await ctx.actions.patch('goals', item.id, row) : await ctx.actions.add('goals', row);
+    if (ok !== false) onClose();
+  }
+  async function remove() {
+    if (!confirm(`"${item.name}" hedefi silinsin mi?`)) return;
+    await ctx.actions.del('goals', item.id);
+    onClose();
+  }
+  return html`
+    <${Sheet} title=${item ? 'Hedefi düzenle' : 'Yeni hedef'} onClose=${onClose}
+      right=${html`<button class="link strong" onClick=${save}>Kaydet</button>`}>
+      <div class="card form">
+        <label class="field"><input placeholder="Hedef (ör. Tatil, Araba)" value=${name} onInput=${e => setName(e.target.value)} /></label>
+        <label class="field"><span>Hedef tutar</span><${MoneyInput} value=${target} onInput=${setTarget} /></label>
+        <label class="field"><span>Şu an biriken</span><${MoneyInput} value=${saved} onInput=${setSaved} /></label>
+      </div>
+      ${item && html`<button class="danger" onClick=${remove}>Sil</button>`}
+    <//>`;
+}
+
+// ---------- Devir ----------
+
+function CarrySheet({ ctx, ask, onClose }) {
+  const { actions } = ctx;
+  const [busy, setBusy] = useState(false);
+  const markAsked = () => { try { sessionStorage.setItem(`tf-carry-asked-${ask.now}`, '1'); } catch { /* yok say */ } };
+  async function answer(amount) {
+    setBusy(true);
+    const ok = await actions.add('carryovers', { month: ask.now, amount });
+    markAsked();
+    if (ok !== false) onClose();
+    setBusy(false);
+  }
+  return html`
+    <${Sheet} title="📅 Devir" onClose=${() => { markAsked(); onClose(); }}>
+      <div class="card hero center-text">
+        <div class="muted">${monthName(ask.prev)} ayından kalan nakit bakiyen</div>
+        <div class="big pos">${tl(ask.amount)}</div>
+        <p class="hint">Bu tutarı ${monthName(ask.now)} ayının nakit bakiyesine ekleyelim mi?</p>
+        <button class="primary" disabled=${busy} onClick=${() => answer(ask.amount)}>Devret</button>
+        <button class="link small" disabled=${busy} onClick=${() => answer(0)}>Devretme</button>
+      </div>
+    <//>`;
 }
 
 // ---------- Bildirimler ----------
@@ -1462,6 +1571,7 @@ function App() {
   const [fin, setFin] = useState(null);
   const [exitingShow, setExitingShow] = useState(false);
   const [askCard, setAskCard] = useState(false);
+  const [askCarry, setAskCarry] = useState(null);
   const [tab, setTab] = useState(() => {
     try {
       const t = localStorage.getItem('tf-tab') || 'month';
@@ -1511,6 +1621,19 @@ function App() {
     try { asked = sessionStorage.getItem(`tf-card-asked-${m}`) === '1'; } catch { /* yok say */ }
     if (!asked && !cardFor(rows, user.id, m)) setAskCard(true);
   }, [phase, rows === null]);
+  // Ayın 5'inden sonra: önceki ayda nakit bakiye kaldıysa devir sor (bir kez; Ekim 2026'dan önceki aylar hariç)
+  useEffect(() => {
+    if (phase !== 'ready' || SHOW || !rows || !user || askCard) return;
+    const now = thisMonth();
+    const prev = addM(now, -1);
+    if (new Date().getDate() < 5 || prev < '2026-10') return;
+    if (carryFor(rows, user.id, now)) return;
+    let asked = false;
+    try { asked = sessionStorage.getItem(`tf-carry-asked-${now}`) === '1'; } catch { /* yok say */ }
+    if (asked) return;
+    const left = nakitLeftFor(rows, user.id, prev, Number(fin?.income) || 0);
+    if (left > 0) setAskCarry({ prev, now, amount: Math.round(left) });
+  }, [phase, rows === null, askCard]);
   const closeCardAsk = () => {
     setAskCard(false);
     try { sessionStorage.setItem(`tf-card-asked-${thisMonth()}`, '1'); } catch { /* yok say */ }
@@ -1576,6 +1699,7 @@ function App() {
     <${Party} />
     ${exitingShow && html`<${ExitShowSheet} onClose=${() => setExitingShow(false)} />`}
     ${askCard && html`<${CardSheet} ctx=${ctx} month=${thisMonth()} prompt=${true} onClose=${closeCardAsk} />`}
+    ${!askCard && askCarry && html`<${CarrySheet} ctx=${ctx} ask=${askCarry} onClose=${() => setAskCarry(null)} />`}
     <nav class="tabs">
       ${TABS.map(([id, label, icon]) => html`
         <button class=${tab === id ? 'on' : ''} onClick=${() => { setTab(id); window.scrollTo(0, 0); }}>

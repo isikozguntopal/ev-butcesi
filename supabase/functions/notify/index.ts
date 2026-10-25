@@ -60,13 +60,28 @@ async function monthly(admin: Admin) {
   return { day, sent };
 }
 
+/** Her akşam 22:00 (cron 19:00 UTC): bugün harcama girmeyen üyelere hatırlatma */
+async function daily(admin: Admin) {
+  const tr = new Date(Date.now() + 3 * 3600_000);
+  const today = tr.toISOString().slice(0, 10);
+  const { data: members } = await admin.from('members').select('user_id, notify_prefs');
+  const { data: todays } = await admin.from('expenses').select('owner_id').eq('date', today);
+  const done = new Set((todays ?? []).map((e: { owner_id: string }) => e.owner_id));
+  const ids: string[] = (members ?? [])
+    .filter((m: { user_id: string; notify_prefs?: Record<string, boolean> }) => (m.notify_prefs ?? {}).daily !== false && !done.has(m.user_id))
+    .map((m: { user_id: string }) => m.user_id);
+  return { today, sent: await sendTo(admin, ids, '🧾 Bugünkü harcamalar', 'Bugün bir harcama girdin mi? Girmeyi unutma 🐶') };
+}
+
 Deno.serve(async req => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
 
   const url = Deno.env.get('SUPABASE_URL')!;
   const cronSecret = Deno.env.get('CRON_SECRET');
   if (cronSecret && req.headers.get('x-cron-secret') === cronSecret) {
-    return json(await monthly(createClient(url, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)));
+    const job = (await req.json().catch(() => ({})) as { job?: string }).job;
+    const admin = createClient(url, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+    return json(job === 'daily' ? await daily(admin) : await monthly(admin));
   }
   const asUser = createClient(url, Deno.env.get('SUPABASE_ANON_KEY')!, {
     global: { headers: { Authorization: req.headers.get('Authorization') ?? '' } },
