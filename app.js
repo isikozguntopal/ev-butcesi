@@ -449,7 +449,14 @@ function CardSheet({ ctx, month, prompt, onClose }) {
     const ok = card ? await actions.patch('card_payments', card.id, row)
       : await actions.add('card_payments', { ...row, month, owner_id: uid });
     if (ok !== false) {
-      if (!card && (value ?? amount) > 0) celebrate('Kart ödemesi girildi!');
+      if ((value ?? amount) > 0) {
+        // Kart ödendiyse o ay kartımdan ödenen taksitler de benim adıma ödenmiş olur
+        const key = paidKey(month, uid);
+        for (const i of included) {
+          if (!(i.paid_months || []).includes(key)) await actions.patch('installments', i.id, { paid_months: [...(i.paid_months || []), key] });
+        }
+        if (!card) celebrate('Kart ödemesi girildi!');
+      }
       onClose();
     }
     setBusy(false);
@@ -474,7 +481,7 @@ function CardSheet({ ctx, month, prompt, onClose }) {
           <b>${tl(Number(i.monthly_amount))}</b></div>`)}
         ${!included.length && html`<${Empty}>Bu ay kartında taksit yok<//>`}
       <//>
-      <p class="hint">Bunlar o ay ayrıca düşülmez. Eşinin kartındaki ortak taksitlerin payı bakiyenden düşmeye devam eder (ayın 5'inde eşine gönderilir).</p>
+      <p class="hint">Kaydedince bunlar senin adına "ödendi" olarak tiklenir; o ay ayrıca düşülmez. Eşinin kartındaki ortak taksitlerin payı bakiyenden düşmeye devam eder (ayın 5'inde eşine gönderilir).</p>
       ${!card && html`<button class="primary ghost" disabled=${busy} onClick=${() => save(0)}>Bu ay kart ödemem yok</button>`}
       ${prompt && !card && html`<button class="link small" onClick=${onClose}>Sonra gireceğim</button>`}
       ${card && html`<button class="danger" onClick=${remove}>Sil</button>`}
