@@ -197,7 +197,7 @@ function ItemForm({ ctx, kind: initialKind, item, preset, month, onClose, onSave
   const base = month || thisMonth();
   const [kind, setKind] = useState(initialKind);
   const [name, setName] = useState(src.name || '');
-  const [amount, setAmount] = useState(Number(src.monthly_amount ?? src.amount ?? 0));
+  const [amount, setAmount] = useState(Math.abs(Number(src.monthly_amount ?? src.amount ?? 0)));
   const [date, setDate] = useState(src.date || (base === thisMonth() ? today() : `${base}-01`));
   const [first, setFirst] = useState(mk(src.first_month) || base);
   const [last, setLast] = useState(mk(src.last_month) || addM(base, 2));
@@ -232,7 +232,8 @@ function ItemForm({ ctx, kind: initialKind, item, preset, month, onClose, onSave
     if (kind === 'installment' && count < 1) return setErr('Son taksit, ilk taksitten önce olamaz');
     setErr('');
     setBusy(true);
-    const amount_ = amt;
+    // Eksi tutarlı düzeltmeler (bakiye eşitleme) düzenlenirken işaret korunur
+    const amount_ = item && Number(item.amount ?? item.monthly_amount) < 0 ? -amt : amt;
     const row = { name: nm, shared, split: shared ? split : 'half', payer_id: shared ? payer : uid };
     if (kind === 'expense') Object.assign(row, { amount: amount_, date });
     if (kind === 'expense' && !item) row.paid_months = paidNow ? [paidKey(mk(date), uid)] : [];
@@ -316,6 +317,7 @@ function MonthScreen({ ctx }) {
   const card = cardFor(rows, uid, m);
   const cardAmt = card ? Number(card.amount) || 0 : 0;
   const [cardOpen, setCardOpen] = useState(false);
+  const [balOpen, setBalOpen] = useState(false);
   const mine = (x, amt) => share(x, Number(amt), uid);
   const counted = insts.filter(i => !coveredByCard(i, uid, card));
   const instT = sumBy(counted, i => mine(i, i.monthly_amount));
@@ -426,11 +428,55 @@ function MonthScreen({ ctx }) {
         amount=${mine(e, e.amount)} full=${Number(e.amount)} paid=${isPaid(e, m)}
         onToggle=${() => toggle('expenses', e)} onOpen=${() => setForm({ kind: 'expense', item: e })} />`)}
       ${!exps.length && html`<${Empty}>Bu ay harcama yok<//>`}
+      ${m === thisMonth() && html`<button class="item link-row" onClick=${() => setBalOpen(true)}>⚖️ Bakiye eşitle<span class="sub">Bankadaki bakiyenle aynı olsun</span></button>`}
     <//>
 
     <button class="fab" onClick=${() => setForm({ kind: 'expense' })} aria-label="Ekle">+</button>
     ${form && html`<${ItemForm} ctx=${ctx} ...${form} month=${m} onClose=${() => setForm(null)} />`}
-    ${cardOpen && html`<${CardSheet} ctx=${ctx} month=${m} onClose=${() => setCardOpen(false)} />`}`;
+    ${cardOpen && html`<${CardSheet} ctx=${ctx} month=${m} onClose=${() => setCardOpen(false)} />`}
+    ${balOpen && html`<${BalanceSheet} ctx=${ctx} expected=${income - paidT} onClose=${() => setBalOpen(false)} />`}`;
+}
+
+// ---------- Bakiye eşitleme ----------
+
+/** Bankadaki gerçek bakiyeyi girince farkı tek bir "Diğer" harcamasıyla kapatır */
+function BalanceSheet({ ctx, expected, onClose }) {
+  const { uid, actions } = ctx;
+  const [real, setReal] = useState(0);
+  const [touched, setTouched] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const diff = Math.round((expected - real) * 100) / 100;
+
+  async function save() {
+    if (!touched || busy || !diff) return;
+    setBusy(true);
+    const ok = await actions.add('expenses', {
+      name: 'Diğer (bakiye eşitleme)', amount: diff, date: today(), shared: false, split: 'half',
+      payer_id: uid, paid_months: [paidKey(thisMonth(), uid)],
+    });
+    if (ok !== false) { celebrate('Bakiye eşitlendi!'); onClose(); }
+    setBusy(false);
+  }
+
+  return html`
+    <${Sheet} title="⚖️ Bakiye eşitle" onClose=${onClose}>
+      <div class="card rows">
+        <div class="row"><span>Uygulamaya göre hesabında olması gereken<small class="muted"> (gelir − bu ay ödenenler)</small></span><b>${tl(expected)}</b></div>
+      </div>
+      <div class="card form">
+        <label class="field"><span>Bankadaki gerçek bakiye</span><${MoneyInput} value=${real} onInput=${v => { setReal(v); setTouched(true); }} /></label>
+      </div>
+      ${touched && html`
+        <div class="card hero center-text">
+          ${!diff ? html`<div class="big">🎉</div><div class="muted">Zaten eşit, eklenecek bir şey yok</div>`
+            : diff > 0 ? html`<div class="muted">Takip edilmemiş harcama</div><div class="big neg">${tl(diff)}</div>
+                <div class="sub">"Diğer (bakiye eşitleme)" adıyla ödenmiş harcama olarak eklenecek</div>`
+            : html`<div class="muted">Bankada beklenenden fazla para var</div><div class="big pos">${tl(-diff)}</div>
+                <div class="sub">Eksi tutarlı bir düzeltme olarak eklenecek; kalan paran artacak</div>`}
+          ${!!diff && html`<button class="primary" disabled=${busy} onClick=${save}>Eşitle</button>`}
+        </div>`}
+      <p class="hint">Sadece sen görürsün. Yanlış eklersen Harcamalar'dan dokunup silebilirsin.</p>
+    <//>`;
 }
 
 // ---------- Kredi kartı ödemesi ----------
