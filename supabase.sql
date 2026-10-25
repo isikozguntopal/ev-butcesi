@@ -39,6 +39,7 @@ create table installments (
   shared boolean not null default false,
   split text not null default 'half' check (split in ('half', 'payer')),
   paid_months text[] not null default '{}',
+  on_card boolean not null default true,
   created_at timestamptz not null default now()
 );
 
