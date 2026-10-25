@@ -233,3 +233,6 @@ create table if not exists carryovers (
 alter table carryovers enable row level security;
 drop policy if exists "kendim" on carryovers;
 create policy "kendim" on carryovers for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());
+
+-- Kart borcu eşitleme (migrations/008)
+alter table card_payments add column if not exists card_adjust numeric not null default 0;

@@ -412,7 +412,9 @@ function MonthScreen({ ctx }) {
   const total = cardAmt + instT + fixT + expT;
   // Kart harcaması: kartta bu ay yapılan tüm harcamalar (tam tutar). Nakit bakiyeden düşmez; kart ödemesiyle borçtan düşer.
   const cardSpend = sumBy(cardItems(rows, uid, m), x => x.amount);
-  const cardDebt = cardSpend - cardAmt;
+  const cardAdjust = card ? Number(card.card_adjust) || 0 : 0;
+  const cardDebt = cardSpend + cardAdjust - cardAmt;
+  const [cardEqOpen, setCardEqOpen] = useState(false);
   const paidT = cardAmt + sumBy(counted.filter(i => isPaid(i, m)), i => mine(i, i.monthly_amount))
     + sumBy(fixedCounted.filter(f => isPaid(f, m)), f => mine(f, f.amount))
     + sumBy(expsCounted.filter(e => isPaid(e, m)), e => mine(e, e.amount));
@@ -493,6 +495,7 @@ function MonthScreen({ ctx }) {
         <div class="row"><span>Kredi kartı ödemesi</span><b>${card ? tl(cardAmt) : html`<span class="warn">Girilmedi</span>`}</b></div>
         <div class="row"><span>Kartta bu ay harcadığın</span><b>${tl(cardSpend)}</b></div>
         <div class="row"><span>Kart borcu (ödenmemiş)</span><b class=${cardDebt > 0 ? 'warn' : 'pos'}>${tl(cardDebt)}</b></div>
+        <div class="row"><span></span><button class="link small" onClick=${() => setCardEqOpen(true)}>⚖️ Kart borcunu eşitle</button></div>
       </div>
     </div>
 
@@ -544,6 +547,7 @@ function MonthScreen({ ctx }) {
     <button class="fab" onClick=${() => setForm({ kind: 'expense' })} aria-label="Ekle">+</button>
     ${form && html`<${ItemForm} ctx=${ctx} ...${form} month=${m} onClose=${() => setForm(null)} />`}
     ${cardOpen && html`<${CardSheet} ctx=${ctx} month=${m} onClose=${() => setCardOpen(false)} />`}
+    ${cardEqOpen && html`<${CardEqSheet} ctx=${ctx} month=${m} cardSpend=${cardSpend} cardAmt=${cardAmt} card=${card} onClose=${() => setCardEqOpen(false)} />`}
     ${taksitOpen && html`<${TaksitSheet} ctx=${ctx} onAdd=${() => setForm({ kind: 'installment' })} onClose=${() => setTaksitOpen(false)} />`}
     ${balOpen && html`<${BalanceSheet} ctx=${ctx} expected=${income - paidT} onClose=${() => setBalOpen(false)} />`}`;
 }
@@ -587,6 +591,49 @@ function BalanceSheet({ ctx, expected, onClose }) {
           ${!!diff && html`<button class="primary" disabled=${busy} onClick=${save}>Eşitle</button>`}
         </div>`}
       <p class="hint">Sadece sen görürsün. Yanlış eklersen Harcamalar'dan dokunup silebilirsin.</p>
+    <//>`;
+}
+
+// ---------- Kart borcunu eşitle ----------
+
+/** Bankada görünen kart borcunu yaz; fark, o ayın kart harcamasına düzeltme olarak eklenir (nakit bakiye değişmez) */
+function CardEqSheet({ ctx, month, cardSpend, cardAmt, card, onClose }) {
+  const { uid, actions } = ctx;
+  const cardAdj = card ? Number(card.card_adjust) || 0 : 0;
+  const appDebt = cardSpend + cardAdj - cardAmt;
+  const [real, setReal] = useState(appDebt);
+  const [touched, setTouched] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const diff = Math.round((real - appDebt) * 100) / 100;
+
+  async function save() {
+    if (!touched || busy || !diff) return;
+    setBusy(true);
+    const adjust = Math.round((real - cardSpend + cardAmt) * 100) / 100;
+    const ok = card
+      ? await actions.patch('card_payments', card.id, { card_adjust: adjust })
+      : await actions.add('card_payments', { month, owner_id: uid, amount: 0, includes_installments: true, card_adjust: adjust });
+    if (ok !== false) { celebrate('Kart borcu eşitlendi!'); onClose(); }
+    setBusy(false);
+  }
+
+  return html`
+    <${Sheet} title="⚖️ Kart borcunu eşitle" onClose=${onClose}
+      right=${html`<button class="link strong" disabled=${!touched || !diff || busy} onClick=${save}>Eşitle</button>`}>
+      <div class="card rows">
+        <div class="row"><span>Uygulamaya göre kart borcun<small class="muted"> (${monthName(month)})</small></span><b>${tl(appDebt)}</b></div>
+      </div>
+      <div class="card form">
+        <label class="field"><span>Bankadaki kart borcun</span><${MoneyInput} value=${real} onInput=${v => { setReal(v); setTouched(true); }} /></label>
+      </div>
+      ${touched && html`
+        <div class="card hero center-text">
+          ${!diff ? html`<div class="big">🎉</div><div class="muted">Zaten eşit</div>`
+            : html`<div class="muted">${diff > 0 ? 'Uygulamada eksik kalan kart harcaması' : 'Uygulamada fazla görünen kart harcaması'}</div>
+                <div class="big ${diff > 0 ? 'neg' : 'pos'}">${tl(Math.abs(diff))}</div>
+                <div class="sub">Düzeltme olarak eklenir. Nakit bakiyeni etkilemez.</div>`}
+        </div>`}
+      <p class="hint">Kart ekstresindeki güncel borcu yaz. Sadece sen görürsün.</p>
     <//>`;
 }
 
@@ -1170,6 +1217,7 @@ function BenScreen({ ctx }) {
   if (page === 'savings') return html`${back('Birikimim')}<${SavingsView} f=${f} setF=${setF} rates=${rates} totals=${{ usdTl, eurTl, goldTl, totalSaved }} />`;
   if (page === 'report') return html`${back('Raporlar')}<${ReportView} ctx=${ctx} />`;
   if (page === 'goals') return html`${back('Hedefler')}<${GoalsView} ctx=${ctx} />`;
+  if (page === 'help') return html`${back('Nasıl kullanılır')}<${HelpView} />`;
   if (page === 'settings') return html`${back('Ayarlar')}<${SettingsView} ctx=${ctx} />`;
 
   const item = (id, icon, title, sub) => html`
@@ -1184,6 +1232,7 @@ function BenScreen({ ctx }) {
     <${Buddy} face=${dailyFace(4)} say=${`Kumbaramızda ${tl(totalSaved)} var 🐷`} />
     <div class="card">
       ${item('savings', '💰', 'Birikimim', `${tl(totalSaved)} · gelir ${tl(f.income)}`)}
+      ${item('help', '📖', 'Nasıl kullanılır', 'Adım adım, ekran görüntüleriyle')}
       ${item('goals', '🎯', 'Hedefler', `${(rows.goals || []).length} hedef · ${tl(sumBy(rows.goals || [], g => Number(g.saved)))} biriktirildi`)}
       ${item('report', '📊', 'Raporlar', 'Para nereye gidiyor, kategoriler, en büyük taksitler')}
       ${item('settings', '⚙️', 'Ayarlar', 'Aile, bildirimler, gösterim modu')}
@@ -1275,6 +1324,39 @@ function SettingsView({ ctx }) {
       : 'Gerçek verilerin gizlenir, uydurma verilerle dolu bir örnek aile görünür. Çıkmak için şifren sorulur.'}</p>
     ${DEMO && !SHOW && html`<p class="hint">Deneme modundasınız: veriler sadece bu cihazda. Supabase bağlanınca iki telefon eşitlenir.</p>`}
     ${!SHOW && html`<button class="danger" onClick=${signOut}>${DEMO ? 'Deneme verilerini sıfırla' : 'Çıkış yap'}</button>`}`;
+}
+
+// ---------- Nasıl kullanılır ----------
+
+const HELP_STEPS = [
+  { img: 'bu-ay.png', title: 'Ana ekran: Bu Ay', text: 'Her şey bu ekranda. Üstte "Ay sonunda kalan" senin nakit bakiyendir. Gelirin, ödediklerinin ve henüz ödemediklerinin özeti altta.' },
+  { img: 'harcama.png', title: 'Harcama ekleme', text: 'Sağ alttaki + ile harcama ekle. Önce "Parayı şimdi ödediniz mi?" sorusunu cevapla. Ödediysen kartla ya da nakitle seç. Henüz ödemediysen "Henüz değil" de; bakiyeden düşer ama "henüz ödenmedi" olarak kalır, ödediğinde tikle.' },
+  { img: 'harcama.png', title: 'Harcama tarihi', text: 'Harcama tarihi, alışverişi yaptığın gündür. Hangi aya yazılacağını bu belirler. Eski bir alışverişi girerken tarihi o güne ayarla.' },
+  { img: 'bu-ay.png', title: 'Kart ödemesi', text: 'Ayın başında Bu Ay\'daki "Kredi kartı ödemesi" satırına dokun ve kartına ödediğin tutarı yaz. Kartla yaptığın tüm kayıtlar bu ödemenin içine geçer ve otomatik tiklenir.' },
+  { img: 'bu-ay.png', title: 'Kart borcunu eşitle', text: 'Kart borcu satırının altındaki "Kart borcunu eşitle" ile ekstredeki gerçek borcu yazarsın. Fark düzeltme olarak eklenir; nakit bakiyen değişmez.' },
+  { img: 'bu-ay.png', title: 'Bakiyeni eşitle', text: 'Harcama listesinin altındaki "Bakiye eşitle" ile bankadaki bakiyeni yaz. Aradaki fark "Diğer (bakiye eşitleme)" olarak eklenir.' },
+  { img: 'bu-ay.png', title: 'Taksitler', text: 'Taksitler başlığındaki "Kalan ... · tümü" ile tüm taksitlerini gör: kalan borç, bitiş tarihleri ve biten taksitler. + Yeni ile taksit ekle.' },
+  { img: null, title: 'Hesaplaşma', text: 'Hesaplaşma sekmesinde eşinle olan ortak kalemlerin mahsuplaşmasını görürsün. "Kalem kalem kontrol et" ile her kalemi incele; gönderdiğinde "Gönderdim", parayı aldığında "Parayı aldım" de. Tamamlanınca o aya ait ortak ödemeler otomatik tiklenir ve kilitlenir.' },
+  { img: null, title: 'Hedefler ve raporlar', text: 'Ben sekmesinde Hedefler ile tatil, araba gibi birikim hedeflerini takip et. Raporlar bölümünde para nereye gidiyor, kategorilere göre ve en büyük taksitleri gör.' },
+  { img: null, title: 'Bildirimler ve ayarlar', text: 'Ben > Ayarlar\'da aile ve davet kodu, hangi bildirimlerin geleceği ve gösterim modu var. Her akşam 22:00\'de bugün harcama girmediysen hatırlatma gelir.' },
+];
+
+function HelpView() {
+  const [i, setI] = useState(0);
+  const step = HELP_STEPS[i];
+  return html`
+    <${Group} title=${`Adım ${i + 1} / ${HELP_STEPS.length}`}>
+      <div class="help">
+        ${step.img && html`<img class="help-img" src=${'./tutorial/' + step.img} alt=${step.title} />`}
+        <h2>${step.title}</h2>
+        <p>${step.text}</p>
+      </div>
+    <//>
+    <div class="help-nav">
+      <button class="pill" disabled=${i === 0} onClick=${() => { setI(i - 1); window.scrollTo(0, 0); }}>‹ Önceki</button>
+      <span class="dots">${HELP_STEPS.map((_, k) => html`<i class=${k === i ? 'on' : ''} onClick=${() => setI(k)}></i>`)}</span>
+      <button class="pill on" disabled=${i === HELP_STEPS.length - 1} onClick=${() => { setI(i + 1); window.scrollTo(0, 0); }}>Sonraki ›</button>
+    </div>`;
 }
 
 // ---------- Hedefler ----------
