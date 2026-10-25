@@ -472,6 +472,7 @@ const LOG_LABEL = { sent: 'Gönderdim', unsent: '"Gönderdim" işaretini kaldır
 function SettleView({ ctx }) {
   const { rows, members, names, uid, actions } = ctx;
   const [m, setM] = useState(addM(thisMonth(), -1));
+  const [review, setReview] = useState(false);
   const s = settlementFor(rows, members, m);
   const rec = rows.settlements.find(x => x.month === m);
   const who = id => (id === uid ? 'Sen' : names[id] || 'Eşin');
@@ -530,24 +531,10 @@ function SettleView({ ctx }) {
               ${status('Alındı', rec?.received_at, rec?.received_by)}
             </div>
             ${rec && Number(rec.amount) !== s.amount && html`<p class="error">İşaretlendikten sonra tutar değişti: ${tl(rec.amount)} → ${tl(s.amount)}</p>`}
-            ${uid === s.from && (rec?.sent_at
-              ? html`<button class="link small" onClick=${() => mark('sent', false)}>"Gönderdim" işaretini kaldır</button>`
-              : html`<button class="primary" onClick=${() => mark('sent', true)}>Gönderdim</button>`)}
-            ${uid === s.to && (rec?.received_at
-              ? html`<button class="link small" onClick=${() => mark('received', false)}>"Aldım" işaretini kaldır</button>`
-              : html`<button class="primary" onClick=${() => mark('received', true)}>Parayı aldım</button>`)}`}
+            <button class="primary" onClick=${() => setReview(true)}>Kalem kalem kontrol et</button>`}
       </div>
     </div>
     ${s && html`
-      <${FoldGroup} id="settle-lines" title="Hesaba girenler" count=${s.lines.length}>
-        ${s.lines.map(l => html`
-          <div class="item" key=${l.id}>
-            <div class="grow"><div class="title">${l.name}</div>
-              <div class="sub">${l.kind} · ${who(l.payer)} ödedi · yarısı ${tl(l.amount / 2)}</div></div>
-            <div class="amt">${tl(l.amount)}</div>
-          </div>`)}
-        ${!s.lines.length && html`<${Empty}>Bu ay "yarı yarıya" ortak kalem yok<//>`}
-      <//>
       ${rec?.log?.length > 0 && html`
         <${FoldGroup} id="settle-log" title="Kayıt geçmişi" count=${rec.log.length}>
           ${[...rec.log].reverse().map((e, k) => html`
@@ -557,7 +544,52 @@ function SettleView({ ctx }) {
               <div class="amt">${tl(e.amount)}</div>
             </div>`)}
         <//>`}`}
-    <p class="hint">Sadece "Ortak alım · yarı yarıya" kalemler hesaba girer; karşılıklı borçlar birbirinden düşülür. Gönderdim/Aldım işaretleri bütçeni etkilemez, sadece takip için kaydedilir.</p>`;
+    <p class="hint">Sadece "Ortak alım · yarı yarıya" kalemler hesaba girer; karşılıklı borçlar birbirinden düşülür. Gönderdim/Aldım işaretleri bütçeni etkilemez, sadece takip için kaydedilir.</p>
+    ${review && s && html`<${SettleSummary} s=${s} rec=${rec} month=${m} who=${who} uid=${uid}
+      onMark=${async (kind, on) => { await mark(kind, on); }} onClose=${() => setReview(false)} />`}`;
+}
+
+/** Gönderimden önce kontrol: her yöndeki borç kalem kalem, ara toplamlar ve net tutar */
+function SettleSummary({ s, rec, month, who, uid, onMark, onClose }) {
+  const side = (debtor, creditor) => {
+    const lines = s.lines.filter(l => l.payer === creditor);
+    return html`
+      <div class="group">
+        <div class="group-head"><span>${who(debtor)} → ${who(creditor)}</span><span>${tl(s.owe[debtor])}</span></div>
+        <div class="card">
+          ${lines.map(l => html`
+            <div class="item" key=${l.id}>
+              <div class="grow"><div class="title">${l.name}</div>
+                <div class="sub">${l.kind} · ${creditor === uid ? 'sen ödedin' : `${who(creditor)} ödedi`} · toplam ${tl(l.amount)}</div></div>
+              <div class="amt"><b>${tl(l.amount / 2)}</b><div class="sub">yarısı</div></div>
+            </div>`)}
+          ${!lines.length && html`<${Empty}>Bu yönde borç yok<//>`}
+          <div class="row pad total-row"><span>Ara toplam</span><b>${tl(s.owe[debtor])}</b></div>
+        </div>
+      </div>`;
+  };
+
+  return html`
+    <${Sheet} title=${`💸 ${monthName(month)} özeti`} onClose=${onClose}>
+      <p class="hint">${monthName(month)} ayının "yarı yarıya" ortak kalemleri. Kartı kim ödediyse diğeri yarısını borçlanır.</p>
+      ${side(s.B, s.A)}
+      ${side(s.A, s.B)}
+      <div class="card hero center-text">
+        <div class="rows">
+          <div class="row"><span>${who(s.B)} → ${who(s.A)}</span><b>${tl(s.owe[s.B])}</b></div>
+          <div class="row"><span>${who(s.A)} → ${who(s.B)}</span><b>− ${tl(s.owe[s.A])}</b></div>
+        </div>
+        <div class="muted">Mahsuplaşınca gönderilecek</div>
+        <div class="transfer"><span>${who(s.from)}</span><span class="arrow">→</span><span>${who(s.to)}</span></div>
+        <div class="big pos">${tl(s.amount)}</div>
+        ${s.amount >= 1 && uid === s.from && (rec?.sent_at
+          ? html`<button class="link small" onClick=${() => onMark('sent', false)}>"Gönderdim" işaretini kaldır</button>`
+          : html`<button class="primary" onClick=${() => onMark('sent', true)}>Kontrol ettim, gönderdim</button>`)}
+        ${s.amount >= 1 && uid === s.to && (rec?.received_at
+          ? html`<button class="link small" onClick=${() => onMark('received', false)}>"Aldım" işaretini kaldır</button>`
+          : html`<button class="primary" onClick=${() => onMark('received', true)}>Kontrol ettim, parayı aldım</button>`)}
+      </div>
+    <//>`;
 }
 
 // ---------- Rapor ----------
