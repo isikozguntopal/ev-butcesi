@@ -380,6 +380,7 @@ function MonthScreen({ ctx }) {
   const cardAmt = card ? Number(card.amount) || 0 : 0;
   const [cardOpen, setCardOpen] = useState(false);
   const [balOpen, setBalOpen] = useState(false);
+  const [taksitOpen, setTaksitOpen] = useState(false);
   const mine = (x, amt) => share(x, Number(amt), uid);
   const counted = insts.filter(i => !coveredByCard(i, uid, card));
   const instT = sumBy(counted, i => mine(i, i.monthly_amount));
@@ -424,6 +425,7 @@ function MonthScreen({ ctx }) {
   const partnerTag = it => (it.shared && partner
     ? `${partner.display_name} ${isPaid(it, m, partner.user_id) ? 'ödedi ✓' : 'ödemedi'}` : null);
   const allPaid = total > 0 && paidT >= total;
+  const debtNow = sumBy(rows.installments, i => share(i, Number(i.monthly_amount), uid) * inst.remaining(i, thisMonth()));
   const say = !income ? 'Merhaba! Önce Ben → Birikimim bölümüne gelirini yazalım mı? 🥕'
     : allPaid ? 'Bu ayın bütün ödemeleri tamam, harikasınız! 🎉'
     : left >= 0 ? `Bu ay ${tl(left)} artıyor, süpersiniz! ✨`
@@ -478,7 +480,7 @@ function MonthScreen({ ctx }) {
           </div>`}
     <//>
 
-    <${Group} title="Taksitler" total=${instT}>
+    <${Group} title="Taksitler" action=${html`<button class="link small" onClick=${() => setTaksitOpen(true)}>Kalan ${tl(debtNow)} · tümü ›</button>`}>
       ${insts.map(i => coveredByCard(i, uid, card)
         ? html`<${PayRow} key=${i.id} title=${i.name} paid=${isPaid(i, m)}
             sub=${subOf(`${cardTag(i)} · ${inst.remaining(i, m)} taksit kaldı`, i)}
@@ -491,7 +493,7 @@ function MonthScreen({ ctx }) {
       ${!insts.length && html`<${Empty}>Bu ay taksit yok<//>`}
     <//>
 
-    <${Group} title="Aylık Ödemeler" total=${fixT}>
+    <${Group} title="Aylık Ödemeler" action=${html`<span>${tl(fixT)} <button class="link small" onClick=${() => setForm({ kind: 'fixed' })}>+ ekle</button></span>`}>
       ${fixed.map(f => html`<${PayRow} key=${f.id} title=${f.name} sub=${subOf(cardTag(f) || '', f)}
         amount=${mine(f, f.amount)} full=${Number(f.amount)} paid=${isPaid(f, m)}
         onToggle=${() => toggle('fixed_payments', f)} onOpen=${() => setForm({ kind: 'fixed', item: f })} />`)}
@@ -510,6 +512,7 @@ function MonthScreen({ ctx }) {
     <button class="fab" onClick=${() => setForm({ kind: 'expense' })} aria-label="Ekle">+</button>
     ${form && html`<${ItemForm} ctx=${ctx} ...${form} month=${m} onClose=${() => setForm(null)} />`}
     ${cardOpen && html`<${CardSheet} ctx=${ctx} month=${m} onClose=${() => setCardOpen(false)} />`}
+    ${taksitOpen && html`<${TaksitSheet} ctx=${ctx} onAdd=${() => setForm({ kind: 'installment' })} onClose=${() => setTaksitOpen(false)} />`}
     ${balOpen && html`<${BalanceSheet} ctx=${ctx} expected=${income - paidT} onClose=${() => setBalOpen(false)} />`}`;
 }
 
@@ -843,7 +846,7 @@ function ReportView({ ctx }) {
     <p class="hint">Rakamlar senin payına göre: ortak kalemlerin yarısı, kart ödemen ve şahsi kayıtların. Aynı isimli harcamalar (ör. "Market") toplanır.</p>`;
 }
 
-// ---------- Ödemeler (taksitler + sabit) ----------
+// ---------- Taksit satırı ----------
 
 function InstRow({ i, ctx, onOpen }) {
   const now = thisMonth();
@@ -867,55 +870,35 @@ function InstRow({ i, ctx, onOpen }) {
     </div>`;
 }
 
-function PaymentsScreen({ ctx }) {
+/** Bu Ay'daki "Taksitler" başlığından açılan tam sayfa: kalan borç, bitiş tarihleri, bitenler */
+function TaksitSheet({ ctx, onAdd, onClose }) {
   const { rows, uid } = ctx;
-  const [seg, setSegState] = useState(() => { try { return localStorage.getItem('tf-pay-seg') === 'fixed' ? 'fixed' : 'inst'; } catch { return 'inst'; } });
-  const setSeg = v => { setSegState(v); try { localStorage.setItem('tf-pay-seg', v); } catch { /* yok say */ } };
-  const [form, setForm] = useState(null);
   const now = thisMonth();
-
   const all = rows.installments;
   const live = all.filter(i => inst.remaining(i, now) > 0).sort((a, b) => (a.last_month > b.last_month ? 1 : -1));
   const done = all.filter(i => inst.remaining(i, now) === 0);
   const monthly = sumBy(all.filter(i => inst.active(i, now)), i => share(i, Number(i.monthly_amount), uid));
   const debt = sumBy(all, i => share(i, Number(i.monthly_amount), uid) * inst.remaining(i, now));
-  const fixed = rows.fixed_payments;
-  const open = (kind, item) => setForm({ kind, item });
-
   return html`
-    <header class="top"><h1>Ödemeler</h1></header>
-    <${Buddy} face=${dailyFace(1)} say=${live.length
-      ? `${live.length} taksit sürüyor, ilki ${shortMonth(inst.last(live[0]))} ayında bitiyor! 💪`
-      : 'Hiç taksit yok, oh be! 😌'} />
-    <${Seg} value=${seg} onChange=${setSeg} options=${[['inst', 'Taksitler'], ['fixed', 'Her ay olanlar']]} />
-    ${seg === 'inst' ? html`
+    <${Sheet} full title="Taksitlerim" onClose=${onClose}
+      right=${html`<button class="link strong" onClick=${onAdd}>+ Yeni</button>`}>
       <div class="card rows">
         <div class="row"><span>Bu ayki taksitlerin</span><b>${tl(monthly)}</b></div>
         <div class="row"><span>Kalan toplam taksit borcun</span><b class="warn">${tl(debt)}</b></div>
       </div>
-      <${FoldGroup} id="inst-own" title="Şahsi" count=${live.filter(i => !i.shared).length}
-        total=${sumBy(live.filter(i => !i.shared && inst.active(i, now)), i => Number(i.monthly_amount))}>
-        ${live.filter(i => !i.shared).map(i => html`<${InstRow} key=${i.id} i=${i} ctx=${ctx} onOpen=${() => open('installment', i)} />`)}
+      <${FoldGroup} id="inst-own" title="Şahsi" count=${live.filter(i => !i.shared).length}>
+        ${live.filter(i => !i.shared).map(i => html`<${InstRow} key=${i.id} i=${i} ctx=${ctx} />`)}
         ${!live.some(i => !i.shared) && html`<${Empty}>Şahsi taksit yok<//>`}
       <//>
-      <${FoldGroup} id="inst-shared" title="Ortak" count=${live.filter(i => i.shared).length}
-        total=${sumBy(live.filter(i => i.shared && inst.active(i, now)), i => share(i, Number(i.monthly_amount), uid))}>
-        ${live.filter(i => i.shared).map(i => html`<${InstRow} key=${i.id} i=${i} ctx=${ctx} onOpen=${() => open('installment', i)} />`)}
+      <${FoldGroup} id="inst-shared" title="Ortak" count=${live.filter(i => i.shared).length}>
+        ${live.filter(i => i.shared).map(i => html`<${InstRow} key=${i.id} i=${i} ctx=${ctx} />`)}
         ${!live.some(i => i.shared) && html`<${Empty}>Ortak taksit yok<//>`}
       <//>
       ${done.length > 0 && html`<${FoldGroup} id="inst-done" title="Bitenler" count=${done.length}>
-        ${done.map(i => html`<${InstRow} key=${i.id} i=${i} ctx=${ctx} onOpen=${() => open('installment', i)} />`)}
+        ${done.map(i => html`<${InstRow} key=${i.id} i=${i} ctx=${ctx} />`)}
       <//>`}
-    ` : html`
-      <${Group} title="Her ay tekrar edenler" total=${sumBy(fixed, f => share(f, Number(f.amount), uid))}>
-        ${fixed.map(f => html`<${PayRow} key=${f.id} title=${f.name} sub=${sharedLabel(f, ctx)}
-          amount=${share(f, Number(f.amount), uid)} full=${Number(f.amount)} onOpen=${() => open('fixed', f)} />`)}
-        ${!fixed.length && html`<${Empty}>Kira, aidat, faturalar, abonelikler…<//>`}
-      <//>
-      <p class="hint">Bu Ay ekranında her ay ödendi olarak işaretleyebilirsin.</p>
-    `}
-    <button class="fab" onClick=${() => setForm({ kind: seg === 'inst' ? 'installment' : 'fixed' })} aria-label="Ekle">+</button>
-    ${form && html`<${ItemForm} ctx=${ctx} ...${form} onClose=${() => setForm(null)} />`}`;
+      <p class="hint">Bir taksidi düzenlemek için Bu Ay'daki taksit satırına dokun.</p>
+    <//>`;
 }
 
 // ---------- Alışveriş ----------
@@ -1450,7 +1433,6 @@ function SettleScreen({ ctx }) {
 
 const TABS = [
   ['month', 'Bu Ay', '📅'],
-  ['payments', 'Ödemeler', '💳'],
   ['shop', 'Alışveriş', '🛒'],
   ['settle', 'Hesaplaşma', '💸'],
   ['money', 'Ben', '👤'],
@@ -1470,6 +1452,7 @@ function App() {
     try {
       const t = localStorage.getItem('tf-tab') || 'month';
       if (t === 'wish') { localStorage.setItem('tf-lists', 'wish'); return 'shop'; }
+      if (t === 'payments') return 'month';
       return t;
     } catch { return 'month'; }
   });
@@ -1566,7 +1549,7 @@ function App() {
       setMembers(ms => ms.map(m => (m.user_id === user.id ? { ...m, notify_prefs: prefs } : m)));
       await guard(() => api.saveNotifyPrefs(user.id, prefs));
     } };
-  const Screen = { month: MonthScreen, payments: PaymentsScreen, shop: ListsScreen, settle: SettleScreen, money: BenScreen }[tab] || MonthScreen;
+  const Screen = { month: MonthScreen, shop: ListsScreen, settle: SettleScreen, money: BenScreen }[tab] || MonthScreen;
 
   return html`
     <main class="screen">
