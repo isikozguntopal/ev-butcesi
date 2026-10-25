@@ -93,8 +93,21 @@ function settlementFor(rows, members, m) {
   const [A, B] = members.map(x => x.user_id);
   const owe = { [A]: 0, [B]: 0 };
   const lines = [];
+  const sentDirect = [];
+  const settled = (rows.settlements || []).some(x => x.month === m && (x.sent_at || x.received_at));
   const add = (it, amount, kind, when) => {
     if (!it.shared || it.split !== 'half' || !(it.payer_id in owe) || !amount) return;
+    // Borçlu ortak harcamayı ay içinde "gönderdim" diye tiklediyse ayın 5'ine girmez.
+    // ":sent" açık işarettir; işaretsiz eski tikler, o ayın hesaplaşması henüz işaretlenmediyse gönderilmiş sayılır.
+    if (kind === 'Harcama') {
+      const debtorKey = paidKey(m, it.payer_id === A ? B : A);
+      const p = it.paid_months || [];
+      const legacy = p.includes(debtorKey) && !p.includes(`${debtorKey}:settled`) && !settled;
+      if (p.includes(`${debtorKey}:sent`) || legacy) {
+        sentDirect.push({ id: it.id, name: it.name, amount, debt: amount / 2, payer: it.payer_id, when });
+        return;
+      }
+    }
     const full = false;
     const debt = amount / 2;
     owe[it.payer_id === A ? B : A] += debt;
@@ -106,7 +119,7 @@ function settlementFor(rows, members, m) {
     .forEach(i => add(i, Number(i.monthly_amount), 'Taksit', `${diffM(inst.first(i), m) + 1}/${inst.total(i)}. taksit`));
   rows.fixed_payments.forEach(f => add(f, Number(f.amount), 'Her ay', 'her ay tekrar eder'));
   const net = owe[A] - owe[B];
-  return { lines, owe, A, B, from: net > 0 ? A : B, to: net > 0 ? B : A, amount: Math.round(Math.abs(net) * 100) / 100 };
+  return { lines, sentDirect, owe, A, B, from: net > 0 ? A : B, to: net > 0 ? B : A, amount: Math.round(Math.abs(net) * 100) / 100 };
 }
 const pick = a => a[Math.floor(Math.random() * a.length)];
 
@@ -341,8 +354,18 @@ function MonthScreen({ ctx }) {
     const p = it.paid_months || [];
     const key = paidKey(m, uid);
     const was = isPaid(it, m);
+    // Eşin kartından ödenen ortak harcamada tik = payımı ona gönderdim (ayın 5'ine girmez)
+    if (!was && table === 'expenses' && it.shared && it.split === 'half' && it.payer_id !== uid) {
+      const payerName = ctx.names[it.payer_id] || 'eşin';
+      if (!confirm(`"${it.name}" harcamasında payın ${tl(Number(it.amount) / 2)}. Kartı ödeyen: ${payerName}.\n\nBu parayı gönderdin mi?\n\nTamam: gönderdim, ayın 5'indeki hesaplaşmaya eklenmez.\nVazgeç: tiklenmez, hesaplaşmada kalır.`)) return;
+    }
     if (!was) celebrate(pick(['Ödendi!', 'Bir tane daha bitti!', 'Aferin bize!', 'Tıkır tıkır!']));
-    actions.patch(table, it.id, { paid_months: was ? p.filter(x => x !== key && x !== m) : [...p, key] });
+    const sentToPartner = !was && table === 'expenses' && it.shared && it.split === 'half' && it.payer_id !== uid;
+    actions.patch(table, it.id, {
+      paid_months: was
+        ? p.filter(x => ![key, m, `${key}:settled`, `${key}:sent`].includes(x))
+        : [...p, key, ...(sentToPartner ? [`${key}:sent`] : [])],
+    });
   };
   const partner = ctx.members.find(x => x.user_id !== uid);
   /** Ortak kalemde eşin o ay kendi tikini attı mı */
@@ -573,7 +596,10 @@ function SettleView({ ctx }) {
         const debtor = l.payer === s.A ? s.B : s.A;
         const it = rows[l.table].find(x => x.id === l.id);
         const key = paidKey(m, debtor);
-        if (it && !(it.paid_months || []).includes(key)) await actions.patch(l.table, l.id, { paid_months: [...(it.paid_months || []), key] });
+        const p = it?.paid_months || [];
+        if (it && !p.includes(`${key}:settled`)) {
+          await actions.patch(l.table, l.id, { paid_months: [...p.filter(x => x !== key), key, `${key}:settled`] });
+        }
       }
       celebrate(kind === 'sent' ? 'Gönderildi!' : 'Hesaplar kapandı!');
       const me = names[uid] || 'Eşin';
@@ -654,6 +680,18 @@ function SettleSummary({ s, rec, month, who, uid, onMark, onClose }) {
       <p class="hint">${monthName(month)} ayının "yarı yarıya" ortak kalemleri. Kartı kim ödediyse diğeri yarısını borçlanır.</p>
       ${side(s.B, s.A)}
       ${side(s.A, s.B)}
+      ${s.sentDirect.length > 0 && html`
+        <div class="group">
+          <div class="group-head"><span>Ay içinde gönderilenler (hesaba girmedi)</span></div>
+          <div class="card">
+            ${s.sentDirect.map(l => html`
+              <div class="item" key=${l.id}>
+                <div class="grow"><div class="title done">${l.name}</div>
+                  <div class="sub">Harcama · ${l.when} · ${l.payer === uid ? 'sen ödedin' : `${who(l.payer)} ödedi`} · payı ay içinde gönderildi ✓</div></div>
+                <div class="amt muted">${tl(l.debt)}</div>
+              </div>`)}
+          </div>
+        </div>`}
       <div class="card hero center-text">
         <div class="rows">
           <div class="row"><span>${who(s.B)} → ${who(s.A)}</span><b>${tl(s.owe[s.B])}</b></div>
