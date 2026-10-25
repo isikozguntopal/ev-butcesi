@@ -37,7 +37,7 @@ create table installments (
   first_month date not null,
   last_month date not null,
   shared boolean not null default false,
-  split text not null default 'half' check (split in ('half', 'payer')),
+  split text not null default 'half' check (split in ('half', 'payer', 'other')),
   paid_months text[] not null default '{}',
   on_card boolean not null default true,
   created_at timestamptz not null default now()
@@ -51,7 +51,7 @@ create table fixed_payments (
   name text not null,
   amount numeric not null,
   shared boolean not null default false,
-  split text not null default 'half' check (split in ('half', 'payer')),
+  split text not null default 'half' check (split in ('half', 'payer', 'other')),
   paid_months text[] not null default '{}',
   created_at timestamptz not null default now()
 );
@@ -65,7 +65,7 @@ create table expenses (
   amount numeric not null,
   date date not null default current_date,
   shared boolean not null default false,
-  split text not null default 'half' check (split in ('half', 'payer')),
+  split text not null default 'half' check (split in ('half', 'payer', 'other')),
   paid_months text[] not null default '{}',
   created_at timestamptz not null default now()
 );

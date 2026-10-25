@@ -68,13 +68,19 @@ const inst = {
 function share(item, amount, uid) {
   if (!item.shared) return amount;
   if (item.split === 'half') return amount / 2;
+  if (item.split === 'other') return item.payer_id === uid ? 0 : amount;
   return item.payer_id === uid ? amount : 0;
 }
 
 function sharedLabel(item, ctx) {
   if (!item.shared) return null;
   const payer = item.payer_id === ctx.uid ? 'senin kartın' : `${ctx.names[item.payer_id] || 'eşin'} kartı`;
-  return item.split === 'half' ? `Ortak · yarı yarıya · ${payer}` : `Ortak · tamamı ${payer}`;
+  if (item.split === 'half') return `Ortak · yarı yarıya · ${payer}`;
+  if (item.split === 'other') {
+    const owner = item.payer_id === ctx.uid ? `${ctx.members.find(x => x.user_id !== ctx.uid)?.display_name || 'eşin'} öder` : 'tamamı senin';
+    return `Ortak · ${payer} · ${owner}`;
+  }
+  return `Ortak · tamamı ${payer}`;
 }
 
 const sumBy = (arr, f) => arr.reduce((s, x) => s + f(x), 0);
@@ -85,16 +91,19 @@ const cardFor = (rows, uid, m) => rows.card_payments.find(c => c.owner_id === ui
  *  Eşin kartındaki taksitler sayılmaya devam eder (payı ayın 5'inde eşe gönderilir). */
 const coveredByCard = (i, uid, card) => !!card && i.payer_id === uid && i.on_card !== false;
 
-/** Ortak "yarı yarıya" kalemlerden m ayı için kimin kime ne kadar göndereceği (mahsuplaşmış) */
+/** Ortak kalemlerden m ayı için kimin kime ne kadar göndereceği (mahsuplaşmış).
+ *  "yarı yarıya": diğeri yarısını borçlanır; "tamamı eşime" (other): diğeri tamamını borçlanır. */
 function settlementFor(rows, members, m) {
   if (members.length < 2) return null;
   const [A, B] = members.map(x => x.user_id);
   const owe = { [A]: 0, [B]: 0 };
   const lines = [];
   const add = (it, amount, kind) => {
-    if (!it.shared || it.split !== 'half' || !(it.payer_id in owe) || !amount) return;
-    owe[it.payer_id === A ? B : A] += amount / 2;
-    lines.push({ id: it.id, name: it.name, kind, amount, payer: it.payer_id });
+    if (!it.shared || !['half', 'other'].includes(it.split) || !(it.payer_id in owe) || !amount) return;
+    const full = it.split === 'other';
+    const debt = full ? amount : amount / 2;
+    owe[it.payer_id === A ? B : A] += debt;
+    lines.push({ id: it.id, name: it.name, kind, table: KIND_TABLE[{ Harcama: 'expense', Taksit: 'installment', 'Her ay': 'fixed' }[kind]], amount, debt, full, payer: it.payer_id });
   };
   rows.expenses.filter(e => mk(e.date) === m).forEach(e => add(e, Number(e.amount), 'Harcama'));
   rows.installments.filter(i => inst.active(i, m)).forEach(i => add(i, Number(i.monthly_amount), 'Taksit'));
@@ -291,7 +300,8 @@ function ItemForm({ ctx, kind: initialKind, item, preset, month, onClose, onSave
           </label>
           <div class="field col">
             <span>Bütçelere nasıl yansısın?</span>
-            <${Seg} value=${split} onChange=${setSplit} options=${[['half', 'Yarı yarıya'], ['payer', 'Tamamı kart sahibine']]} />
+            <${Seg} value=${split} onChange=${setSplit} options=${[['half', 'Yarı yarıya'], ['payer', 'Tamamı kart sahibine'], ['other', 'Tamamı diğerine']]} />
+            ${split === 'other' && html`<small class="muted">Kartı ${payer === uid ? 'sen' : (members.find(x => x.user_id === payer)?.display_name || 'eşin')} ödüyor, tamamı ${payer === uid ? (members.find(x => x.user_id !== uid)?.display_name || 'eşin') : 'senin'}. Hesaplaşmada tamamı kart sahibine geri gönderilir.</small>`}
           </div>`}
       </div>
       ${item && item.owner_id === uid && html`<button class="danger" onClick=${remove}>Sil</button>`}
@@ -396,9 +406,10 @@ function MonthScreen({ ctx }) {
 
     <${Group} title="Taksitler" total=${instT}>
       ${insts.map(i => coveredByCard(i, uid, card)
-        ? html`<${PayRow} key=${i.id} title=${i.name} paid=${true}
-            sub=${subOf(`💳 karta dahil · ${inst.remaining(i, m)} taksit kaldı`, i)}
-            amount=${mine(i, i.monthly_amount)} onOpen=${() => setForm({ kind: 'installment', item: i })} />`
+        ? html`<${PayRow} key=${i.id} title=${i.name} paid=${isPaid(i, m)}
+            sub=${subOf(`💳 karta dahil, toplama eklenmez · ${inst.remaining(i, m)} taksit kaldı`, i)}
+            amount=${mine(i, i.monthly_amount)} onToggle=${() => toggle('installments', i)}
+            onOpen=${() => setForm({ kind: 'installment', item: i })} />`
         : html`<${PayRow} key=${i.id} title=${i.name}
             sub=${subOf(`${inst.remaining(i, m)} taksit kaldı · son ${shortMonth(inst.last(i))}`, i)}
             amount=${mine(i, i.monthly_amount)} full=${Number(i.monthly_amount)} paid=${isPaid(i, m)}
@@ -506,6 +517,13 @@ function SettleView({ ctx }) {
       ? await actions.patch('settlements', rec.id, { ...base, ...patch, log: [...(rec.log || []), entry] })
       : await actions.add('settlements', { month: m, ...base, ...patch, log: [entry] });
     if (ok !== false && on) {
+      // Hesaplaşmayla borçlu kendi payını ödemiş olur: o ayın kalemlerinde borçluyu "ödedi" olarak işaretle
+      for (const l of s.lines) {
+        const debtor = l.payer === s.A ? s.B : s.A;
+        const it = rows[l.table].find(x => x.id === l.id);
+        const key = paidKey(m, debtor);
+        if (it && !(it.paid_months || []).includes(key)) await actions.patch(l.table, l.id, { paid_months: [...(it.paid_months || []), key] });
+      }
       celebrate(kind === 'sent' ? 'Gönderildi!' : 'Hesaplar kapandı!');
       const me = names[uid] || 'Eşin';
       api.notify({
@@ -555,7 +573,7 @@ function SettleView({ ctx }) {
               <div class="amt">${tl(e.amount)}</div>
             </div>`)}
         <//>`}`}
-    <p class="hint">Sadece "Ortak alım · yarı yarıya" kalemler hesaba girer; karşılıklı borçlar birbirinden düşülür. Gönderdim/Aldım işaretleri bütçeni etkilemez, sadece takip için kaydedilir.</p>
+    <p class="hint">"Yarı yarıya" ve "tamamı diğerine" ortak kalemler hesaba girer; karşılıklı borçlar birbirinden düşülür. Gönderdim/Aldım işaretleri bütçeni etkilemez, sadece takip için kaydedilir.</p>
     ${review && s && html`<${SettleSummary} s=${s} rec=${rec} month=${m} who=${who} uid=${uid}
       onMark=${async (kind, on) => { await mark(kind, on); }} onClose=${() => setReview(false)} />`}`;
 }
@@ -572,7 +590,7 @@ function SettleSummary({ s, rec, month, who, uid, onMark, onClose }) {
             <div class="item" key=${l.id}>
               <div class="grow"><div class="title">${l.name}</div>
                 <div class="sub">${l.kind} · ${creditor === uid ? 'sen ödedin' : `${who(creditor)} ödedi`} · toplam ${tl(l.amount)}</div></div>
-              <div class="amt"><b>${tl(l.amount / 2)}</b><div class="sub">yarısı</div></div>
+              <div class="amt"><b>${tl(l.debt)}</b><div class="sub">${l.full ? 'tamamı' : 'yarısı'}</div></div>
             </div>`)}
           ${!lines.length && html`<${Empty}>Bu yönde borç yok<//>`}
           <div class="row pad total-row"><span>Ara toplam</span><b>${tl(s.owe[debtor])}</b></div>
@@ -582,7 +600,7 @@ function SettleSummary({ s, rec, month, who, uid, onMark, onClose }) {
 
   return html`
     <${Sheet} title=${`💸 ${monthName(month)} özeti`} onClose=${onClose}>
-      <p class="hint">${monthName(month)} ayının "yarı yarıya" ortak kalemleri. Kartı kim ödediyse diğeri yarısını borçlanır.</p>
+      <p class="hint">${monthName(month)} ayının ortak kalemleri. Kartı kim ödediyse diğeri "yarı yarıya" kalemlerde yarısını, "tamamı diğerine" kalemlerde tamamını borçlanır.</p>
       ${side(s.B, s.A)}
       ${side(s.A, s.B)}
       <div class="card hero center-text">
