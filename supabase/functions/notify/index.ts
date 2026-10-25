@@ -71,8 +71,11 @@ Deno.serve(async req => {
   const { data: { user } } = await asUser.auth.getUser();
   if (!user) return json({ error: 'giriş gerekli' }, 401);
 
-  const { title, body } = await req.json().catch(() => ({}));
+  const { title, body, test } = await req.json().catch(() => ({}));
   const admin = createClient(url, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+
+  // Kurulum testi: bildirimi sadece isteyen kişinin kendi telefonlarına gönder
+  if (test) return json({ sent: await sendTo(admin, [user.id], '🐶 Test bildirimi', 'Bildirimler çalışıyor, hav hav!') });
 
   const { data: me } = await admin.from('members').select('household_id').eq('user_id', user.id).maybeSingle();
   if (!me) return json({ sent: 0 });

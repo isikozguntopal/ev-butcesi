@@ -53,6 +53,7 @@ create table fixed_payments (
   shared boolean not null default false,
   split text not null default 'half' check (split in ('half', 'payer')),
   paid_months text[] not null default '{}',
+  on_card boolean not null default false,
   created_at timestamptz not null default now()
 );
 
@@ -67,6 +68,7 @@ create table expenses (
   shared boolean not null default false,
   split text not null default 'half' check (split in ('half', 'payer')),
   paid_months text[] not null default '{}',
+  on_card boolean not null default false,
   created_at timestamptz not null default now()
 );
 

@@ -71,7 +71,7 @@ const remote = {
     check(await (await client()).from('push_subscriptions').upsert(row, { onConflict: 'endpoint' }));
   },
   async notify(msg) {
-    await (await client()).functions.invoke('notify', { body: msg });
+    return check(await (await client()).functions.invoke('notify', { body: msg }));
   },
 };
 

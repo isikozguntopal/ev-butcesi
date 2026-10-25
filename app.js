@@ -84,7 +84,17 @@ const sumBy = (arr, f) => arr.reduce((s, x) => s + f(x), 0);
 const cardFor = (rows, uid, m) => rows.card_payments.find(c => c.owner_id === uid && c.month === m);
 /** O ay kart ödemesi girildiyse, benim kartımdan ödenen taksit ödemenin içindedir; ayrıca sayılmaz.
  *  Eşin kartındaki taksitler sayılmaya devam eder (payı ayın 5'inde eşe gönderilir). */
-const coveredByCard = (i, uid, card) => !!card && i.payer_id === uid && i.on_card !== false;
+/** Kayıt kartla mı ödeniyor? Taksitlerde varsayılan kart, harcama ve "her ay"da varsayılan nakit. */
+const onCardItem = (it, table = 'installments') => (table === 'installments' ? it.on_card !== false : it.on_card === true);
+const coveredByCard = (it, uid, card, table = 'installments') => !!card && it.payer_id === uid && onCardItem(it, table);
+/** O ay kart ödememe dahil olan kayıtlar (kendi kartım) */
+function cardItems(rows, uid, m) {
+  return [
+    ...rows.installments.filter(i => inst.active(i, m) && i.payer_id === uid && onCardItem(i, 'installments')).map(it => ({ it, table: 'installments', kind: 'Taksit', amount: Number(it.monthly_amount) })),
+    ...rows.fixed_payments.filter(f => f.payer_id === uid && onCardItem(f, 'fixed_payments')).map(it => ({ it, table: 'fixed_payments', kind: 'Her ay', amount: Number(it.amount) })),
+    ...rows.expenses.filter(e => mk(e.date) === m && e.payer_id === uid && onCardItem(e, 'expenses')).map(it => ({ it, table: 'expenses', kind: 'Harcama', amount: Number(it.amount) })),
+  ];
+}
 
 /** Ortak "yarı yarıya" kalemlerden m ayı için kimin kime ne kadar göndereceği (mahsuplaşmış).
  *  Kartı kim ödediyse diğeri yarısını borçlanır. */
@@ -221,8 +231,7 @@ function ItemForm({ ctx, kind: initialKind, item, preset, month, onClose, onSave
   const [payer, setPayer] = useState(src.payer_id || uid);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const [paidNow, setPaidNow] = useState(true);
-  const [onCard, setOnCard] = useState(src.on_card !== false);
+  const [methodPick, setMethod] = useState(null);
   const formRef = useRef(null);
 
   // Son taksit ilk taksitten önceye düşerse (ör. Ocak seçilip yıl değişmemişse) bir sonraki yıla al
@@ -235,6 +244,13 @@ function ItemForm({ ctx, kind: initialKind, item, preset, month, onClose, onSave
   const count = diffM(first, last) + 1;
   const left = last < thisMonth() ? 0 : diffM(first > thisMonth() ? first : thisMonth(), last) + 1;
   const table = KIND_TABLE[kind];
+  // Ödeme şekli: kart (kart ödemesine dahil) / nakit / henüz ödenmedi (sadece harcama)
+  const initialMethod = item
+    ? (onCardItem(item, table) ? 'card' : kind === 'expense' && !isPaid(item, mk(item.date)) ? 'unpaid' : 'cash')
+    : kind === 'fixed' ? 'cash' : 'card';
+  let method = methodPick || initialMethod;
+  if (method === 'unpaid' && kind !== 'expense') method = 'cash';
+  const showMethod = !shared || payer === uid;
 
   async function save() {
     if (busy) return;
@@ -251,9 +267,10 @@ function ItemForm({ ctx, kind: initialKind, item, preset, month, onClose, onSave
     const amount_ = item && Number(item.amount ?? item.monthly_amount) < 0 ? -amt : amt;
     const row = { name: nm, shared, split: shared ? split : 'half', payer_id: shared ? payer : uid };
     if (kind === 'expense') Object.assign(row, { amount: amount_, date });
-    if (kind === 'expense' && !item) row.paid_months = paidNow ? [paidKey(mk(date), uid)] : [];
     if (kind === 'fixed') Object.assign(row, { amount: amount_ });
-    if (kind === 'installment') Object.assign(row, { on_card: onCard, monthly_amount: amount_, first_month: `${first}-01`, last_month: `${last}-01` });
+    if (kind === 'installment') Object.assign(row, { monthly_amount: amount_, first_month: `${first}-01`, last_month: `${last}-01` });
+    row.on_card = showMethod && method === 'card';
+    if (kind === 'expense' && !item) row.paid_months = showMethod && method === 'cash' ? [paidKey(mk(date), uid)] : [];
     const ok = item ? await actions.patch(table, item.id, row) : await actions.add(table, row);
     if (ok !== false) {
       if (onSaved) await onSaved();
@@ -280,19 +297,23 @@ function ItemForm({ ctx, kind: initialKind, item, preset, month, onClose, onSave
           onInput=${e => { setName(e.target.value); setErr(''); }} onChange=${e => setName(e.target.value)} /></label>
         <label class="field"><span>${kind === 'installment' ? 'Aylık taksit' : 'Tutar'}</span><${MoneyInput} value=${amount} onInput=${v => { setAmount(v); setErr(''); }} /></label>
         ${kind === 'expense' && html`
-          ${!item && html`<label class="field toggle"><span>Ödendi<small>Göndereceğin/ödeyeceğin bir şeyse kaldır, sonra tikle</small></span>
-            <input type="checkbox" checked=${paidNow} onChange=${e => setPaidNow(e.target.checked)} /></label>`}
           <label class="field"><span>Tarih</span><input type="date" value=${date} onInput=${e => setDate(e.target.value || date)} onChange=${e => setDate(e.target.value || date)} /></label>`}
         ${kind === 'installment' && html`
           <label class="field"><span>İlk taksit</span><input type="month" value=${first} onInput=${e => setFirst(e.target.value || first)} onChange=${e => setFirst(e.target.value || first)} /></label>
           <label class="field"><span>Son taksit</span><input type="month" value=${last} onInput=${pickLast} onChange=${pickLast} /></label>`}
       </div>
-      ${kind === 'installment' && (!shared || payer === uid) && html`
-        <div class="card form">
-          <label class="field toggle">
-            <span>Kredi kartımdan ödeniyor<small>Kart ödemeni girince ayrıca düşülmez (KYK gibi kart dışı taksitlerde kaldır)</small></span>
-            <input type="checkbox" checked=${onCard} onChange=${e => setOnCard(e.target.checked)} />
-          </label>
+      ${showMethod && html`
+        <div class="field col method">
+          <span>Ödeme şekli</span>
+          <${Seg} value=${method} onChange=${v => { setMethod(v); setErr(''); }}
+            options=${kind === 'expense'
+              ? [['card', '💳 Kart'], ['cash', '💵 Nakit'], ['unpaid', '⏳ Ödenmedi']]
+              : [['card', '💳 Kart'], ['cash', '💵 Nakit / havale']]} />
+          <small class="muted">${{
+            card: 'Kart ödemeni girince toplama ayrıca eklenmez ve otomatik ödendi olur.',
+            cash: kind === 'expense' ? 'Hemen ödendi olarak işaretlenir.' : 'Her ay toplama girer, tikini sen atarsın.',
+            unpaid: 'Tiksiz kalır (ör. eşine göndereceğin para); gönderince tikle.',
+          }[method]}</small>
         </div>`}
       ${kind === 'installment' && html`
         <p class="hint">${count < 1 ? 'Son taksit, ilk taksitten önce olamaz.'
@@ -336,12 +357,17 @@ function MonthScreen({ ctx }) {
   const mine = (x, amt) => share(x, Number(amt), uid);
   const counted = insts.filter(i => !coveredByCard(i, uid, card));
   const instT = sumBy(counted, i => mine(i, i.monthly_amount));
-  const fixT = sumBy(fixed, f => mine(f, f.amount));
-  const expT = sumBy(exps, e => mine(e, e.amount));
+  const fixedCounted = fixed.filter(f => !coveredByCard(f, uid, card, 'fixed_payments'));
+  const expsCounted = exps.filter(e => !coveredByCard(e, uid, card, 'expenses'));
+  const fixT = sumBy(fixedCounted, f => mine(f, f.amount));
+  const expT = sumBy(expsCounted, e => mine(e, e.amount));
   const total = cardAmt + instT + fixT + expT;
   const paidT = cardAmt + sumBy(counted.filter(i => isPaid(i, m)), i => mine(i, i.monthly_amount))
-    + sumBy(fixed.filter(f => isPaid(f, m)), f => mine(f, f.amount))
-    + sumBy(exps.filter(e => isPaid(e, m)), e => mine(e, e.amount));
+    + sumBy(fixedCounted.filter(f => isPaid(f, m)), f => mine(f, f.amount))
+    + sumBy(expsCounted.filter(e => isPaid(e, m)), e => mine(e, e.amount));
+  const inCard = card ? cardItems(rows, uid, m).length : 0;
+  const cardTag = it => (it.payer_id === uid && onCardItem(it, it.monthly_amount != null ? 'installments' : it.date ? 'expenses' : 'fixed_payments')
+    ? (card ? '💳 karta dahil, toplama eklenmez' : '💳 kartla') : null);
 
   // Ayın ilk 10 günü: geçen ayın hesaplaşması bekliyorsa hatırlat
   const prev = addM(thisMonth(), -1);
@@ -415,8 +441,7 @@ function MonthScreen({ ctx }) {
         ? html`<div class="item" onClick=${() => setCardOpen(true)}>
             <span class="check on">💳</span>
             <div class="grow"><div class="title">Kart ödemesi</div>
-              <div class="sub">${insts.some(i => coveredByCard(i, uid, card))
-                ? `Kartındaki ${insts.filter(i => coveredByCard(i, uid, card)).length} taksit dahil` : 'Kartında taksit yok'}</div></div>
+              <div class="sub">${inCard ? `Kartındaki ${inCard} kayıt dahil` : 'Kartla ödenen kayıt yok'}</div></div>
             <div class="amt">${tl(cardAmt)}</div>
           </div>`
         : html`<div class="item" onClick=${() => setCardOpen(true)}>
@@ -430,7 +455,7 @@ function MonthScreen({ ctx }) {
     <${Group} title="Taksitler" total=${instT}>
       ${insts.map(i => coveredByCard(i, uid, card)
         ? html`<${PayRow} key=${i.id} title=${i.name} paid=${isPaid(i, m)}
-            sub=${subOf(`💳 karta dahil, toplama eklenmez · ${inst.remaining(i, m)} taksit kaldı`, i)}
+            sub=${subOf(`${cardTag(i)} · ${inst.remaining(i, m)} taksit kaldı`, i)}
             amount=${mine(i, i.monthly_amount)} onToggle=${() => toggle('installments', i)}
             onOpen=${() => setForm({ kind: 'installment', item: i })} />`
         : html`<${PayRow} key=${i.id} title=${i.name}
@@ -441,7 +466,7 @@ function MonthScreen({ ctx }) {
     <//>
 
     <${Group} title="Aylık Ödemeler" total=${fixT}>
-      ${fixed.map(f => html`<${PayRow} key=${f.id} title=${f.name} sub=${subOf('', f)}
+      ${fixed.map(f => html`<${PayRow} key=${f.id} title=${f.name} sub=${subOf(cardTag(f) || '', f)}
         amount=${mine(f, f.amount)} full=${Number(f.amount)} paid=${isPaid(f, m)}
         onToggle=${() => toggle('fixed_payments', f)} onOpen=${() => setForm({ kind: 'fixed', item: f })} />`)}
       ${!fixed.length && html`<${Empty}>Kira, fatura, abonelik… "+" ile "Her ay" seçerek ekle<//>`}
@@ -449,7 +474,7 @@ function MonthScreen({ ctx }) {
 
     <${Group} title="Harcamalar" total=${expT}>
       ${exps.map(e => html`<${PayRow} key=${e.id} title=${e.name}
-        sub=${subOf(`${Number(e.date.slice(8, 10))} ${AYLAR[Number(e.date.slice(5, 7)) - 1]}`, e)}
+        sub=${subOf([`${Number(e.date.slice(8, 10))} ${AYLAR[Number(e.date.slice(5, 7)) - 1]}`, cardTag(e)].filter(Boolean).join(' · '), e)}
         amount=${mine(e, e.amount)} full=${Number(e.amount)} paid=${isPaid(e, m)}
         onToggle=${() => toggle('expenses', e)} onOpen=${() => setForm({ kind: 'expense', item: e })} />`)}
       ${!exps.length && html`<${Empty}>Bu ay harcama yok<//>`}
@@ -510,7 +535,7 @@ function CardSheet({ ctx, month, prompt, onClose }) {
   const { rows, uid, actions } = ctx;
   const card = cardFor(rows, uid, month);
   const [amount, setAmount] = useState(Number(card?.amount || 0));
-  const included = rows.installments.filter(i => inst.active(i, month) && i.payer_id === uid && i.on_card !== false);
+  const included = cardItems(rows, uid, month);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -523,10 +548,10 @@ function CardSheet({ ctx, month, prompt, onClose }) {
       : await actions.add('card_payments', { ...row, month, owner_id: uid });
     if (ok !== false) {
       if ((value ?? amount) > 0) {
-        // Kart ödendiyse o ay kartımdan ödenen taksitler de benim adıma ödenmiş olur
+        // Kart ödendiyse o ay kartımdan ödenen her şey (taksit, her ay, harcama) benim adıma ödenmiş olur
         const key = paidKey(month, uid);
-        for (const i of included) {
-          if (!(i.paid_months || []).includes(key)) await actions.patch('installments', i.id, { paid_months: [...(i.paid_months || []), key] });
+        for (const { it, table } of included) {
+          if (!(it.paid_months || []).includes(key)) await actions.patch(table, it.id, { paid_months: [...(it.paid_months || []), key] });
         }
         if (!card) celebrate('Kart ödemesi girildi!');
       }
@@ -549,12 +574,12 @@ function CardSheet({ ctx, month, prompt, onClose }) {
         <label class="field"><span>Ödediğin tutar</span><${MoneyInput} value=${amount} onInput=${v => { setAmount(v); setErr(''); }} /></label>
       </div>
       <p class="hint">Bu tutar ${monthName(month)} bütçenden düşer. Sadece sen görürsün.</p>
-      <${Group} title="Bu ödemeye dahil taksitler (senin kartın)" total=${sumBy(included, i => Number(i.monthly_amount))}>
-        ${included.map(i => html`<div class="row pad" key=${i.id}><span>${i.name}${i.shared ? html`<small class="muted"> · ortak, yarısı eşinden gelir</small>` : ''}</span>
-          <b>${tl(Number(i.monthly_amount))}</b></div>`)}
-        ${!included.length && html`<${Empty}>Bu ay kartında taksit yok<//>`}
+      <${Group} title="Bu ödemeye dahil olanlar (senin kartın)" total=${sumBy(included, x => x.amount)}>
+        ${included.map(({ it, kind, amount: a }) => html`<div class="row pad" key=${it.id}><span>${it.name}<small class="muted"> · ${kind}${it.shared ? ' · ortak, yarısı eşinden gelir' : ''}</small></span>
+          <b>${tl(a)}</b></div>`)}
+        ${!included.length && html`<${Empty}>Bu ay kartla ödenen kayıt yok<//>`}
       <//>
-      <p class="hint">Kaydedince bunlar senin adına "ödendi" olarak tiklenir; o ay ayrıca düşülmez. Eşinin kartındaki ortak taksitlerin payı bakiyenden düşmeye devam eder (ayın 5'inde eşine gönderilir).</p>
+      <p class="hint">Kaydedince bunlar senin adına "ödendi" olarak tiklenir; o ay ayrıca düşülmez. Ödeme şekli "Kart" olan kayıtlar buraya girer. Eşinin kartındaki ortak kalemlerin payı bakiyenden düşmeye devam eder (ayın 5'inde eşine gönderilir).</p>
       ${!card && html`<button class="primary ghost" disabled=${busy} onClick=${() => save(0)}>Bu ay kart ödemem yok</button>`}
       ${prompt && !card && html`<button class="link small" onClick=${onClose}>Sonra gireceğim</button>`}
       ${card && html`<button class="danger" onClick=${remove}>Sil</button>`}
@@ -734,8 +759,8 @@ function ReportView({ ctx }) {
     const card = cardFor(rows, uid, m);
     const c = card ? Number(card.amount) || 0 : 0;
     const ins = sumBy(rows.installments.filter(i => inst.active(i, m) && !coveredByCard(i, uid, card)), i => mine(i, i.monthly_amount));
-    const fx = sumBy(rows.fixed_payments, f => mine(f, f.amount));
-    const ex = sumBy(rows.expenses.filter(e => mk(e.date) === m), e => mine(e, e.amount));
+    const fx = sumBy(rows.fixed_payments.filter(f => !coveredByCard(f, uid, card, 'fixed_payments')), f => mine(f, f.amount));
+    const ex = sumBy(rows.expenses.filter(e => mk(e.date) === m && !coveredByCard(e, uid, card, 'expenses')), e => mine(e, e.amount));
     return { m, card: c, inst: ins, fixed: fx, exp: ex, total: c + ins + fx + ex };
   });
   const grand = sumBy(perMonth, x => x.total);
@@ -1181,12 +1206,26 @@ function PushSettings() {
     }
   }
 
+  async function sendTest() {
+    setBusy(true);
+    try {
+      const r = await api.notify({ test: true });
+      if (!r?.sent) alert('Bu cihaz için kayıt bulunamadı. Önce "Yenile" deyip tekrar dene.');
+    } catch (err) {
+      alert('Test gönderilemedi: ' + err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   let content;
   if (DEMO || !VAPID_PUBLIC_KEY) content = html`<div class="row pad"><span class="muted">Supabase kurulunca açılır</span></div>`;
   else if (!supported) content = html`<div class="row pad"><span class="muted">${standalone ? 'Bu cihaz bildirim desteklemiyor (iOS 16.4+ gerekir)' : 'Önce Safari → Paylaş → Ana Ekrana Ekle, sonra oradan açın'}</span></div>`;
   else if (state === 'denied') content = html`<div class="row pad"><span class="muted">Kapalı. Ayarlar → Bildirimler bölümünden açabilirsiniz.</span></div>`;
   else content = html`<div class="row pad"><span>${state === 'granted' ? 'Bu cihazda açık ✓' : 'Eşin ortak bir şey ekleyince haber ver'}</span>
-    <button class="pill on" disabled=${busy} onClick=${enable}>${state === 'granted' ? 'Yenile' : 'Aç'}</button></div>`;
+    <button class="pill on" disabled=${busy} onClick=${enable}>${state === 'granted' ? 'Yenile' : 'Aç'}</button></div>
+    ${state === 'granted' && html`<div class="row pad"><span>Kurulumu dene</span>
+      <button class="pill on" disabled=${busy} onClick=${sendTest}>Bana test gönder</button></div>`}`;
 
   return html`<${Group} title="Bildirimler">${content}<//>`;
 }
