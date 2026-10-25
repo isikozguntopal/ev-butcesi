@@ -236,3 +236,6 @@ create policy "kendim" on carryovers for all using (owner_id = auth.uid()) with 
 
 -- Kart borcu eşitleme (migrations/008)
 alter table card_payments add column if not exists card_adjust numeric not null default 0;
+
+-- Ekstre ayı (migrations/009)
+alter table card_payments add column if not exists statement_month text;
