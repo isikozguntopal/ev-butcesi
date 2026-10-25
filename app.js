@@ -93,16 +93,18 @@ function settlementFor(rows, members, m) {
   const [A, B] = members.map(x => x.user_id);
   const owe = { [A]: 0, [B]: 0 };
   const lines = [];
-  const add = (it, amount, kind) => {
+  const add = (it, amount, kind, when) => {
     if (!it.shared || it.split !== 'half' || !(it.payer_id in owe) || !amount) return;
     const full = false;
     const debt = amount / 2;
     owe[it.payer_id === A ? B : A] += debt;
-    lines.push({ id: it.id, name: it.name, kind, table: KIND_TABLE[{ Harcama: 'expense', Taksit: 'installment', 'Her ay': 'fixed' }[kind]], amount, debt, full, payer: it.payer_id });
+    lines.push({ id: it.id, name: it.name, kind, table: KIND_TABLE[{ Harcama: 'expense', Taksit: 'installment', 'Her ay': 'fixed' }[kind]], amount, debt, full, payer: it.payer_id, when });
   };
-  rows.expenses.filter(e => mk(e.date) === m).forEach(e => add(e, Number(e.amount), 'Harcama'));
-  rows.installments.filter(i => inst.active(i, m)).forEach(i => add(i, Number(i.monthly_amount), 'Taksit'));
-  rows.fixed_payments.forEach(f => add(f, Number(f.amount), 'Her ay'));
+  rows.expenses.filter(e => mk(e.date) === m)
+    .forEach(e => add(e, Number(e.amount), 'Harcama', `${Number(e.date.slice(8, 10))} ${AYLAR[Number(e.date.slice(5, 7)) - 1]}`));
+  rows.installments.filter(i => inst.active(i, m))
+    .forEach(i => add(i, Number(i.monthly_amount), 'Taksit', `${diffM(inst.first(i), m) + 1}/${inst.total(i)}. taksit`));
+  rows.fixed_payments.forEach(f => add(f, Number(f.amount), 'Her ay', 'her ay tekrar eder'));
   const net = owe[A] - owe[B];
   return { lines, owe, A, B, from: net > 0 ? A : B, to: net > 0 ? B : A, amount: Math.round(Math.abs(net) * 100) / 100 };
 }
@@ -638,7 +640,7 @@ function SettleSummary({ s, rec, month, who, uid, onMark, onClose }) {
           ${lines.map(l => html`
             <div class="item" key=${l.id}>
               <div class="grow"><div class="title">${l.name}</div>
-                <div class="sub">${l.kind} · ${creditor === uid ? 'sen ödedin' : `${who(creditor)} ödedi`} · toplam ${tl(l.amount)}</div></div>
+                <div class="sub">${l.kind} · ${l.when} · ${creditor === uid ? 'sen ödedin' : `${who(creditor)} ödedi`} · toplam ${tl(l.amount)}</div></div>
               <div class="amt"><b>${tl(l.debt)}</b><div class="sub">${l.full ? 'tamamı' : 'yarısı'}</div></div>
             </div>`)}
           ${!lines.length && html`<${Empty}>Bu yönde borç yok<//>`}
