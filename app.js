@@ -976,6 +976,29 @@ function byCategory(items) {
 }
 const lower = s => s.toLocaleLowerCase('tr');
 
+/** Sola kaydırınca "Sil" düğmesi çıkar */
+function SwipeRow({ onDelete, children }) {
+  const [dx, setDx] = useState(0);
+  const [moving, setMoving] = useState(false);
+  const startX = useRef(null);
+  const onStart = e => { startX.current = e.touches[0].clientX; setMoving(true); };
+  const onMove = e => {
+    if (startX.current == null) return;
+    setDx(Math.min(0, Math.max(-96, e.touches[0].clientX - startX.current)));
+  };
+  const onEnd = () => {
+    startX.current = null;
+    setMoving(false);
+    setDx(v => (v < -48 ? -96 : 0));
+  };
+  return html`
+    <div class="swipe-row">
+      <button class="swipe-del" onClick=${onDelete}>Sil</button>
+      <div class="swipe-body" style=${`transform: translateX(${dx}px); transition: ${moving ? 'none' : 'transform .2s ease'}`}
+        onTouchStart=${onStart} onTouchMove=${onMove} onTouchEnd=${onEnd}>${children}</div>
+    </div>`;
+}
+
 function ShoppingScreen({ ctx, embedded }) {
   const { rows, actions, uid, names } = ctx;
   const [q, setQ] = useState('');
@@ -1019,9 +1042,10 @@ function ShoppingScreen({ ctx, embedded }) {
       <div class="group" key=${c}>
         <div class="group-head"><span>${c}</span></div>
         <div class="card">
-          ${list.map(i => html`<button class="item" key=${i.id} onClick=${() => actions.patch('shopping_items', i.id, { checked: !i.checked })}>
-            <span class=${'check' + (i.checked ? ' on' : '')}>${i.checked ? '✓' : ''}</span>
-            <span class=${'grow title' + (i.checked ? ' done' : '')}>${i.name}</span></button>`)}
+          ${list.map(i => html`<${SwipeRow} key=${i.id} onDelete=${() => actions.patch('shopping_items', i.id, { in_list: false, checked: false })}>
+            <button class="item" onClick=${() => actions.patch('shopping_items', i.id, { checked: !i.checked })}>
+              <span class=${'check' + (i.checked ? ' on' : '')}>${i.checked ? '✓' : ''}</span>
+              <span class=${'grow title' + (i.checked ? ' done' : '')}>${i.name}</span></button><//>`)}
         </div>
       </div>`)}
     ${!inList.length && html`<div class="card"><${Empty}>Liste boş. Yukarıdan ürün arayıp ekle.<//></div>`}
@@ -1273,6 +1297,12 @@ const NOTIFY_TYPES = [
 ];
 
 function SettingsView({ ctx }) {
+  const [fab, setFabState] = useState(fabPrefs);
+  const setFab = (k, v) => {
+    try { localStorage.setItem(k, v); } catch { /* yok say */ }
+    setFabState(fabPrefs());
+    window.dispatchEvent(new Event('tf-fab-change'));
+  };
   const { household, members, uid, signOut } = ctx;
   const [copied, setCopied] = useState(false);
   const me = members.find(m => m.user_id === uid);
@@ -1295,6 +1325,12 @@ function SettingsView({ ctx }) {
     <//>
     ${members.length < 2 && !DEMO && html`<p class="hint">Eşin uygulamada hesap açıp "Davet koduyla katıl" deyip bu kodu girsin.</p>`}
 
+    <${Group} title="Harcama butonu">
+      <label class="field toggle"><span>Hayvan ve para süslemeleri<small>Butonun üstündeki emojiler</small></span>
+        <input type="checkbox" checked=${fab.decor} onChange=${e => setFab('tf-fab-decor', e.target.checked ? '1' : '0')} /></label>
+      <label class="field toggle"><span>Yerini kilitle<small>Kapalıyken sürükleyip kenara bırakabilirsin</small></span>
+        <input type="checkbox" checked=${fab.locked} onChange=${e => setFab('tf-fab-lock', e.target.checked ? '1' : '0')} /></label>
+    <//>
     <${PushSettings} />
     <${Group} title="Hangi bildirimler gelsin?">
       ${NOTIFY_TYPES.map(([k, title, sub]) => html`
@@ -1623,9 +1659,9 @@ function CardPanel({ ctx, m }) {
   const cards = cardItems(rows, uid, m);
   const sumKind = k => sumBy(cards.filter(c => c.kind === k), c => c.amount);
   const debtLeft = Math.max(0, (Number(fin.card_debt) || 0) - cardAmt);
-  const row = (key, label, value) => html`
+  const row = (key, label, value, sign) => html`
     <div class="row"><span>${label}</span>
-      <span class="flow-right"><b>${value}</b><button class="flow-btn" aria-label="Detayını gör" onClick=${() => ctx.goOzet(key)}>›</button></span></div>`;
+      <span class="flow-right"><b class=${sign === 'in' ? 'pos' : 'neg'}>${sign === 'in' ? '+' : '−'} ${value}</b><button class="flow-btn" aria-label="Detayını gör" onClick=${() => ctx.goOzet(key)}>›</button></span></div>`;
   return html`
     <div class="group">
       <div class="card hero">
@@ -1633,10 +1669,10 @@ function CardPanel({ ctx, m }) {
         <button class="link small" onClick=${() => setLimitOpen(true)}>💳 Kart bilgilerini güncelle</button>
       </div>
       <div class="card rows">
-        ${row('kpay', 'Bu ay kart ödemesi', card ? tl(cardAmt) : 'Girilmedi')}
-        ${row('kfixed', 'Aylık ödemelerden kartla', tl(sumKind('Her ay')))}
-        ${row('kinst', 'Taksitlerden kartla', tl(sumKind('Taksit')))}
-        ${row('kexp', 'Harcamalardan kartla', tl(sumKind('Harcama')))}
+        ${row('kpay', 'Bu ay kart ödemesi', card ? tl(cardAmt) : 'Girilmedi', 'in')}
+        ${row('kfixed', 'Aylık ödemelerden kartla', tl(sumKind('Her ay')), 'out')}
+        ${row('kinst', 'Taksitlerden kartla', tl(sumKind('Taksit')), 'out')}
+        ${row('kexp', 'Harcamalardan kartla', tl(sumKind('Harcama')), 'out')}
         <div class="row"><span>Kalan kart borcu</span><b class=${debtLeft > 0 ? 'warn' : 'pos'}>${tl(debtLeft)}</b></div>
         <div class="row"><span></span><button class="link small" onClick=${() => setCardOpen(true)}>${card ? 'Kart ödemesini düzenle' : 'Kart ödemesini gir'}</button></div>
       </div>
@@ -1979,36 +2015,57 @@ const TABS = [
 ];
 
 /** Her sekmede duran, sürüklenebilir "Harcama ekle" butonu */
+const fabPrefs = () => {
+  try { return { decor: localStorage.getItem('tf-fab-decor') !== '0', locked: localStorage.getItem('tf-fab-lock') === '1' }; }
+  catch { return { decor: true, locked: false }; }
+};
+
 function QuickAdd({ onTap }) {
+  const [prefs, setPrefs] = useState(fabPrefs);
   const [pos, setPos] = useState(() => { try { return JSON.parse(localStorage.getItem('tf-fab')) || null; } catch { return null; } });
   const drag = useRef(null);
   const latest = useRef(pos);
+  const wrap = useRef(null);
+  useEffect(() => {
+    const on = () => setPrefs(fabPrefs());
+    window.addEventListener('tf-fab-change', on);
+    return () => window.removeEventListener('tf-fab-change', on);
+  }, []);
   const down = e => {
-    const r = e.currentTarget.getBoundingClientRect();
+    if (prefs.locked) { drag.current = { tap: true }; return; }
+    const r = wrap.current.getBoundingClientRect();
     drag.current = { dx: e.clientX - r.left, dy: e.clientY - r.top, x0: e.clientX, y0: e.clientY, moved: false };
-    e.currentTarget.setPointerCapture(e.pointerId);
   };
   const move = e => {
     const d = drag.current;
-    if (!d) return;
+    if (!d || d.tap) return;
     if (Math.abs(e.clientX - d.x0) + Math.abs(e.clientY - d.y0) > 6) d.moved = true;
     if (!d.moved) return;
-    latest.current = { x: Math.min(window.innerWidth - 60, Math.max(6, e.clientX - d.dx)), y: Math.min(window.innerHeight - 70, Math.max(6, e.clientY - d.dy)) };
+    const r = wrap.current.getBoundingClientRect();
+    latest.current = {
+      x: Math.min(window.innerWidth - r.width, Math.max(0, e.clientX - d.dx)),
+      y: Math.min(window.innerHeight - r.height - 90, Math.max(8, e.clientY - d.dy)),
+    };
     setPos(latest.current);
   };
   const up = () => {
     const d = drag.current;
     drag.current = null;
     if (!d) return;
-    if (d.moved) { try { localStorage.setItem('tf-fab', JSON.stringify(latest.current)); } catch { /* yok say */ } }
-    else onTap();
+    if (d.tap || !d.moved) { onTap(); return; }
+    // Bırakınca en yakın kenara yapış (ortada kalmasın)
+    const r = wrap.current.getBoundingClientRect();
+    const midX = latest.current.x + r.width / 2;
+    latest.current = { x: midX < window.innerWidth / 2 ? 8 : window.innerWidth - r.width - 8, y: latest.current.y };
+    setPos(latest.current);
+    try { localStorage.setItem('tf-fab', JSON.stringify(latest.current)); } catch { /* yok say */ }
   };
-  const face = dailyFace(5);
   return html`
-    <button class="quick" style=${pos ? `left:${pos.x}px;top:${pos.y}px;right:auto;bottom:auto` : ''}
+    <div class="quick-wrap" ref=${wrap} style=${pos ? `left:${pos.x}px;top:${pos.y}px;right:auto;bottom:auto` : ''}
       onPointerDown=${down} onPointerMove=${move} onPointerUp=${up} onPointerCancel=${() => { drag.current = null; }}>
-      <span class="quick-face">${face}</span><span>Harcama ekle</span>
-    </button>`;
+      ${prefs.decor && html`<div class="quick-deco"><span>${dailyFace(5)}</span><span>💸</span><span>${dailyFace(2)}</span><span>📉</span></div>`}
+      <button class="quick-btn" aria-label="Harcama ekle">+</button>
+    </div>`;
 }
 
 function App() {
