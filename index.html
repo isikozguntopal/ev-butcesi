@@ -199,6 +199,29 @@
     .dots { display: flex; gap: 6px; }
     .dots i { width: 7px; height: 7px; border-radius: 4px; background: var(--fill); display: block; cursor: pointer; }
     .dots i.on { background: var(--accent); width: 18px; }
+    .carousel { overflow: hidden; margin: 0 -16px; }
+    .track { display: flex; width: 200%; transition: transform .32s cubic-bezier(.2,.8,.2,1); }
+    .page { width: 50%; flex: none; padding: 0 16px; box-sizing: border-box; }
+    .page-dots { justify-content: center; margin: 4px 0 12px; }
+    .page-dots i { width: 8px; height: 8px; border-radius: 4px; }
+    .page-dots i.on { width: 20px; }
+    .gauge { padding: 4px 0 2px; }
+    .gauge-limit { font-size: 36px; margin: 2px 0 10px; }
+    .gauge-bar { height: 12px; border-radius: 6px; background: var(--fill); overflow: hidden; }
+    .gauge-bar > div { height: 100%; border-radius: 6px; transition: width .4s ease, background .4s ease; }
+    .gauge-row { display: flex; justify-content: space-between; gap: 8px; margin-top: 8px; font-size: 13px; color: var(--muted); }
+    .gauge-row b { color: var(--text); font-variant-numeric: tabular-nums; }
+    .gauge-avail { font-size: 15px; }
+    .g-total { font-weight: 700; font-size: 16px; font-variant-numeric: tabular-nums; }
+    .g-total.pos, .amt.pos, .pos { color: var(--pos); }
+    .g-total.neg, .amt.neg, .neg { color: var(--neg); }
+    .amt { font-weight: 600; font-variant-numeric: tabular-nums; }
+    .quick { position: fixed; right: 14px; bottom: calc(env(safe-area-inset-bottom) + 84px); z-index: 8; display: flex; align-items: center; gap: 8px;
+      background: var(--accent); color: #fff; border: 0; border-radius: 999px; padding: 6px 18px 6px 6px; font-weight: 600; font-size: 15px;
+      box-shadow: 0 8px 22px rgba(0,0,0,.22); touch-action: none; user-select: none; }
+    .quick-face { width: 42px; height: 42px; border-radius: 50%; background: #fff; display: grid; place-items: center; font-size: 26px;
+      animation: bob 2.6s ease-in-out infinite; }
+    @keyframes bob { 0%, 100% { transform: translateY(0) rotate(-4deg); } 50% { transform: translateY(-3px) rotate(4deg); } }
     .error {
       background: color-mix(in srgb, var(--neg) 12%, transparent); color: var(--neg);
       font-size: 14px; font-weight: 600; padding: 10px 14px; border-radius: 12px; margin: 4px 0 12px;

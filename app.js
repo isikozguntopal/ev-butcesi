@@ -403,6 +403,16 @@ function MonthScreen({ ctx }) {
   const [balOpen, setBalOpen] = useState(false);
   const [taksitOpen, setTaksitOpen] = useState(false);
   const [detail, setDetail] = useState(null);
+  const [page, setPage] = useState(0);
+  const touchX = useRef(null);
+  const onTouchStart = e => { touchX.current = e.touches[0].clientX; };
+  const onTouchEnd = e => {
+    if (touchX.current == null) return;
+    const dx = e.changedTouches[0].clientX - touchX.current;
+    touchX.current = null;
+    if (dx < -50) setPage(1);
+    if (dx > 50) setPage(0);
+  };
   const mine = (x, amt) => share(x, Number(amt), uid);
   const counted = insts.filter(i => !coveredByCard(i, uid, card));
   const instT = sumBy(counted, i => mine(i, i.monthly_amount));
@@ -489,26 +499,37 @@ function MonthScreen({ ctx }) {
         <span class="pill on">Gör</span>
       </button>`}
 
-    <div class="card hero">
-      <div class="muted">Ay sonunda kalan (nakit bakiye)</div>
-      <div class=${'big ' + (left < 0 ? 'neg' : 'pos')}>${tl(left)}</div>
-      ${!income && html`<div class="sub">Ben → Birikimim bölümüne aylık gelirini yaz</div>`}
-      <div class="rows">
-        <div class="row"><span>Gelir</span><b>${tl(income)}</b></div>
-        ${carryAmt !== 0 && html`<div class="row"><span>Önceki aydan devir</span><b>${tl(carryAmt)}</b></div>`}
-        <div class="row"><span>Ödendi / bu ay toplam</span><b><span class="muted">${tl(paidT)}</span> / ${tl(total)}</b></div>
-        <div class="row"><span>Henüz ödenmedi</span><b class="warn">${tl(total - paidT)}</b></div>
-        <${BalanceFlow} ctx=${ctx} m=${m} income=${income} />
+    <div class="carousel" onTouchStart=${onTouchStart} onTouchEnd=${onTouchEnd}>
+      <div class="track" style=${`transform: translateX(${page === 0 ? 0 : -50}%)`}>
+        <section class="page">
+      <div class="card hero">
+        <div class="muted">Ay sonunda kalan (nakit bakiye)</div>
+        <div class=${'big ' + (left < 0 ? 'neg' : 'pos')}>${tl(left)}</div>
+        ${!income && html`<div class="sub">Ben → Birikimim bölümüne aylık gelirini yaz</div>`}
+        <div class="rows">
+          <div class="row"><span>Gelir</span><b>${tl(income)}</b></div>
+          ${carryAmt !== 0 && html`<div class="row"><span>Önceki aydan devir</span><b>${tl(carryAmt)}</b></div>`}
+          <div class="row"><span>Ödendi / bu ay toplam</span><b><span class="muted">${tl(paidT)}</span> / ${tl(total)}</b></div>
+          <div class="row"><span>Henüz ödenmedi</span><b class="warn">${tl(total - paidT)}</b></div>
+          <${BalanceFlow} ctx=${ctx} m=${m} income=${income} />
+        </div>
+      </div>
+          <${CategoryGroups} ctx=${ctx} m=${m} side="nakit" onToggle=${toggle} onOpen=${x => setDetail(x)} />
+          ${m === thisMonth() && html`<button class="item link-row" onClick=${() => setBalOpen(true)}>⚖️ Bakiye eşitle<span class="sub">Bankadaki bakiyenle aynı olsun</span></button>`}
+        </section>
+        <section class="page">
+          <${CardPanel} ctx=${ctx} m=${m} />
+          <${CategoryGroups} ctx=${ctx} m=${m} side="kart" onToggle=${toggle} onOpen=${x => setDetail(x)} />
+        </section>
+      </div>
+      <div class="dots page-dots">
+        <i class=${page === 0 ? 'on' : ''} onClick=${() => setPage(0)}></i>
+        <i class=${page === 1 ? 'on' : ''} onClick=${() => setPage(1)}></i>
       </div>
     </div>
-
-    <${CardPanel} ctx=${ctx} m=${m} />
-
-    <${CategoryGroups} ctx=${ctx} m=${m} onToggle=${toggle} onOpen=${x => setDetail(x)} />
     <div class="row pad"><button class="link small" onClick=${() => setTaksitOpen(true)}>Tüm taksitler ve bitenler ›</button></div>
-    ${m === thisMonth() && html`<button class="item link-row" onClick=${() => setBalOpen(true)}>⚖️ Bakiye eşitle<span class="sub">Bankadaki bakiyenle aynı olsun</span></button>`}
 
-    <button class="fab" onClick=${() => setForm({ kind: 'expense' })} aria-label="Ekle">+</button>
+
     ${form && html`<${ItemForm} ctx=${ctx} ...${form} month=${m} onClose=${() => setForm(null)} />`}
     ${cardOpen && html`<${CardSheet} ctx=${ctx} month=${m} onClose=${() => setCardOpen(false)} />`}
     ${detail && html`<${RecordDetail} ctx=${ctx} m=${m} rec=${detail} onClose=${() => setDetail(null)} onEdit=${() => { setForm({ kind: detail.kind, item: detail.it }); setDetail(null); }} />`}
@@ -1436,17 +1457,21 @@ function cardUsedNowFor(fin, rows, uid) {
 }
 
 /** Açılır grup: başlık ve toplam; dokununca aşağı açılır */
-const OzetGroup = ({ title, total, open, onToggle, children }) => html`
-  <div class="group">
-    <button class="group-head fold" onClick=${onToggle} aria-expanded=${open}>
-      <span><span class=${'chev' + (open ? ' open' : '')}>›</span>${title}</span>
-      <span>${tl(total)}</span>
-    </button>
-    ${open && html`<div class="card">${children}</div>`}
-  </div>`;
+const OzetGroup = ({ title, total, open, onToggle, children, sign = 'out' }) => {
+  const v = Number(total) || 0;
+  const plus = sign === 'in' || (sign === 'auto' && v >= 0);
+  return html`
+    <div class="group">
+      <button class="group-head fold" onClick=${onToggle} aria-expanded=${open}>
+        <span><span class=${'chev' + (open ? ' open' : '')}>›</span>${title}</span>
+        <span class=${'g-total ' + (plus ? 'pos' : 'neg')}>${plus ? '+' : '−'} ${tl(Math.abs(v))}</span>
+      </button>
+      ${open && html`<div class="card">${children}</div>`}
+    </div>`;
+};
 
 /** Kayıt satırı: dokununca hemen altında detay açılır */
-function OzetItem({ ctx, m, it, table, kind, amt, open, onToggle }) {
+function OzetItem({ ctx, m, it, table, kind, amt, open, onToggle, sign = 'out' }) {
   const { uid, names } = ctx;
   const paid = isPaid(it, m);
   const payer = it.payer_id === uid ? 'sen' : names[it.payer_id] || 'eşin';
@@ -1456,7 +1481,7 @@ function OzetItem({ ctx, m, it, table, kind, amt, open, onToggle }) {
       <button class="item" onClick=${onToggle}>
         <span class="grow"><span class="title">${it.name}</span>
           <span class="sub">${kind === 'installment' ? `${inst.remaining(it, m)} taksit kaldı · ` : ''}${it.on_card ? 'kredi kartı' : 'nakit'}${it.shared ? ` · ortak (${payer} ödedi)` : ''}</span></span>
-        <span class="amt">${tl(amt)}</span>
+        <span class=${'amt ' + (sign === 'in' ? 'pos' : 'neg')}>${sign === 'in' ? '+' : '−'} ${tl(amt)}</span>
       </button>
       ${open && html`<div class="detail-inline">
         <div class="row pad"><span>Ne zaman açıldı</span><b>${fmtDate(started)}</b></div>
@@ -1498,7 +1523,7 @@ function OzetScreen({ ctx }) {
   };
   const itemsOf = (k, list, table, kind) => list.map(x => ({ ...x, table, kind, key: itemKey(k, x.it.id) }));
   const renderItems = list => list.map(x => html`<${OzetItem} key=${x.key} ctx=${ctx} m=${m} it=${x.it} table=${x.table}
-    kind=${x.kind} amt=${x.amt ?? x.amount} open=${itemOpen === x.key} onToggle=${() => setItemOpen(itemOpen === x.key ? null : x.key)} />`);
+    kind=${x.kind} amt=${x.amt ?? x.amount} sign=${x.sign || 'out'} open=${itemOpen === x.key} onToggle=${() => setItemOpen(itemOpen === x.key ? null : x.key)} />`);
 
   return html`
     <header class="top"><h1>Bakiye özeti</h1></header>
@@ -1515,7 +1540,7 @@ function OzetScreen({ ctx }) {
     <div class="swipe" onTouchStart=${onTouchStart} onTouchEnd=${onTouchEnd}>
     ${view === 'nakit' ? html`
       <div class="card row pad"><span>Gelir</span><b class="pos">${tl(b.income)}</b></div>
-      <${OzetGroup} title="Hesaplaşma" total=${b.settle} open=${!!groupOpen.settle} onToggle=${() => toggleGroup('settle')}>
+      <${OzetGroup} sign="auto" title="Hesaplaşma" total=${b.settle} open=${!!groupOpen.settle} onToggle=${() => toggleGroup('settle')}>
         ${(s?.lines || []).map(l => html`<div class="row pad" key=${l.id}><span>${l.name}<small class="muted"> · ${l.kind} · ${who(l.payer)} ödedi</small></span><b>${tl(l.amount / 2)}</b></div>`)}
         <div class="row pad"><span>${b.settle >= 0 ? 'Sana gelecek' : 'Sana gidecek'}</span><b class=${b.settle >= 0 ? 'pos' : 'warn'}>${tl(Math.abs(b.settle))}</b></div>
         ${!s?.lines?.length && html`<${Empty}>Bu ay ortak kalem yok<//>`}
@@ -1541,7 +1566,8 @@ function OzetScreen({ ctx }) {
         <div class=${'big ' + (b.left < 0 ? 'neg' : 'pos')}>${tl(b.left)}</div>
       </div>
     ` : html`
-      <${OzetGroup} title="Kart ödemesi" total=${b.cardAmt} open=${!!groupOpen.kpay} onToggle=${() => toggleGroup('kpay')}>
+      <${CardGauge} limit=${limit} used=${used} />
+      <${OzetGroup} sign="in" title="Kart ödemesi (kullanılabilir bakiyeyi artırır)" total=${b.cardAmt} open=${!!groupOpen.kpay} onToggle=${() => toggleGroup('kpay')}>
         <div class="row pad"><span>Bu ay yaptığın ödeme</span><b>${tl(b.cardAmt)}</b></div>
       <//>
       <${OzetGroup} title="Aylık ödemelerden kartla" total=${sumBy(cards.filter(c => c.kind === 'Her ay'), c => c.amount)} open=${!!groupOpen.kfixed} onToggle=${() => toggleGroup('kfixed')}>
@@ -1567,6 +1593,23 @@ function OzetScreen({ ctx }) {
     ${cardOpen && html`<${CardSheet} ctx=${ctx} month=${m} onClose=${() => setCardOpen(false)} />`}`;
 }
 
+/** Kart limiti göstergesi: kullanıldıkça çubuk yeşilden kırmızıya döner */
+function CardGauge({ limit, used }) {
+  const avail = Math.max(0, limit - used);
+  const ratio = limit > 0 ? Math.min(1, Math.max(0, used / limit)) : 0;
+  const hue = Math.round(120 * (1 - ratio));
+  return html`
+    <div class="gauge">
+      <div class="muted">Kart limiti</div>
+      <div class="big gauge-limit">${tl(limit)}</div>
+      <div class="gauge-bar"><div style=${`width:${(ratio * 100).toFixed(1)}%;background:hsl(${hue} 70% 46%)`}></div></div>
+      <div class="gauge-row">
+        <span>Kullanılan <b>${tl(used)}</b></span>
+        <span>Kullanılabilir <b class="gauge-avail" style=${`color:hsl(${hue} 70% 38%)`}>${tl(avail)}</b></span>
+      </div>
+    </div>`;
+}
+
 /** Bu Ay'daki kredi kartı paneli: limit, kullanılan, kalan; kartla yapılan kalemler okla Özet'e gider */
 function CardPanel({ ctx, m }) {
   const { rows, uid, fin } = ctx;
@@ -1586,12 +1629,7 @@ function CardPanel({ ctx, m }) {
   return html`
     <div class="group">
       <div class="card hero">
-        <div class="muted">Kredi kartı limiti</div>
-        <div class="big">${tl(limit)}</div>
-        <div class="rows">
-          <div class="row"><span>Kullanılan</span><b>${tl(used)}</b></div>
-          <div class="row"><span>Kalan</span><b class=${limit && remain < limit * 0.2 ? 'warn' : 'pos'}>${tl(remain)}</b></div>
-        </div>
+        <${CardGauge} limit=${limit} used=${used} />
         <button class="link small" onClick=${() => setLimitOpen(true)}>💳 Kart bilgilerini güncelle</button>
       </div>
       <div class="card rows">
@@ -1629,10 +1667,14 @@ const recSub = (x, m, uid, names) => [
   x.it.shared ? (x.it.payer_id === uid ? 'ortak · senin kartın' : `ortak · ${names[x.it.payer_id] || 'eşin'} kartı`) : null,
 ].filter(Boolean).join(' · ');
 
-function CategoryGroups({ ctx, m, onToggle, onOpen }) {
+function CategoryGroups({ ctx, m, side, onToggle, onOpen }) {
   const { rows, uid, names } = ctx;
   const [toggled, setToggled] = useState({});
-  const groups = recordGroups(rows, uid, m);
+  const onCardRec = x => x.it.payer_id === uid && onCardItem(x.it, x.table);
+  const groups = recordGroups(rows, uid, m).map(g => {
+    const items = g.items.filter(x => (side === 'kart') === onCardRec(x));
+    return { ...g, items, total: sumBy(items, x => share(x.it, x.amt, uid)), hasUnpaid: items.some(x => !isPaid(x.it, m)) };
+  });
   const isOpen = g => (g.id in toggled ? toggled[g.id] : g.hasUnpaid);
   return html`<div>
     ${groups.map(g => html`
@@ -1936,6 +1978,39 @@ const TABS = [
   ['money', 'Ben', '👤'],
 ];
 
+/** Her sekmede duran, sürüklenebilir "Harcama ekle" butonu */
+function QuickAdd({ onTap }) {
+  const [pos, setPos] = useState(() => { try { return JSON.parse(localStorage.getItem('tf-fab')) || null; } catch { return null; } });
+  const drag = useRef(null);
+  const latest = useRef(pos);
+  const down = e => {
+    const r = e.currentTarget.getBoundingClientRect();
+    drag.current = { dx: e.clientX - r.left, dy: e.clientY - r.top, x0: e.clientX, y0: e.clientY, moved: false };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const move = e => {
+    const d = drag.current;
+    if (!d) return;
+    if (Math.abs(e.clientX - d.x0) + Math.abs(e.clientY - d.y0) > 6) d.moved = true;
+    if (!d.moved) return;
+    latest.current = { x: Math.min(window.innerWidth - 60, Math.max(6, e.clientX - d.dx)), y: Math.min(window.innerHeight - 70, Math.max(6, e.clientY - d.dy)) };
+    setPos(latest.current);
+  };
+  const up = () => {
+    const d = drag.current;
+    drag.current = null;
+    if (!d) return;
+    if (d.moved) { try { localStorage.setItem('tf-fab', JSON.stringify(latest.current)); } catch { /* yok say */ } }
+    else onTap();
+  };
+  const face = dailyFace(5);
+  return html`
+    <button class="quick" style=${pos ? `left:${pos.x}px;top:${pos.y}px;right:auto;bottom:auto` : ''}
+      onPointerDown=${down} onPointerMove=${move} onPointerUp=${up} onPointerCancel=${() => { drag.current = null; }}>
+      <span class="quick-face">${face}</span><span>Harcama ekle</span>
+    </button>`;
+}
+
 function App() {
   const [phase, setPhase] = useState('loading');
   const [error, setError] = useState('');
@@ -1947,6 +2022,7 @@ function App() {
   const [exitingShow, setExitingShow] = useState(false);
   const [askCard, setAskCard] = useState(false);
   const [askCarry, setAskCarry] = useState(null);
+  const [quick, setQuick] = useState(false);
   const [tab, setTab] = useState(() => {
     try {
       const t = localStorage.getItem('tf-tab') || 'month';
@@ -2076,6 +2152,8 @@ function App() {
     ${exitingShow && html`<${ExitShowSheet} onClose=${() => setExitingShow(false)} />`}
     ${askCard && html`<${CardSheet} ctx=${ctx} month=${thisMonth()} prompt=${true} onClose=${closeCardAsk} />`}
     ${!askCard && askCarry && html`<${CarrySheet} ctx=${ctx} ask=${askCarry} onClose=${() => setAskCarry(null)} />`}
+    <${QuickAdd} onTap=${() => setQuick(true)} />
+    ${quick && html`<${ItemForm} ctx=${ctx} kind="expense" month=${thisMonth()} onClose=${() => setQuick(false)} />`}
     <nav class="tabs">
       ${TABS.map(([id, label, icon]) => html`
         <button class=${tab === id ? 'on' : ''} onClick=${() => { setTab(id); window.scrollTo(0, 0); }}>
