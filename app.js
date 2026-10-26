@@ -502,21 +502,7 @@ function MonthScreen({ ctx }) {
       </div>
     </div>
 
-    <${Group} title="Kredi kartı" total=${cardAmt}>
-      ${card
-        ? html`<div class="item" onClick=${() => setCardOpen(true)}>
-            <span class="check on">💳</span>
-            <div class="grow"><div class="title">Kart ödemesi</div>
-              <div class="sub">${inCard ? `Kartındaki ${inCard} kayıt dahil` : 'Kartla ödenen kayıt yok'}</div></div>
-            <div class="amt">${tl(cardAmt)}</div>
-          </div>`
-        : html`<div class="item" onClick=${() => setCardOpen(true)}>
-            <span class="check warn">!</span>
-            <div class="grow"><div class="title">${monthName(m)} kart ödemeni gir</div>
-              <div class="sub">Ne kadar ödediysen o ayın bütçesinden düşer</div></div>
-            <span class="pill on">Gir</span>
-          </div>`}
-    <//>
+    <${CardPanel} ctx=${ctx} m=${m} />
 
     <${CategoryGroups} ctx=${ctx} m=${m} onToggle=${toggle} onOpen=${x => setDetail(x)} />
     <div class="row pad"><button class="link small" onClick=${() => setTaksitOpen(true)}>Tüm taksitler ve bitenler ›</button></div>
@@ -1484,10 +1470,11 @@ function OzetItem({ ctx, m, it, table, kind, amt, open, onToggle }) {
 function OzetScreen({ ctx }) {
   const { rows, uid, fin, members, names } = ctx;
   const [m, setM] = useState(thisMonth());
-  const [view, setView] = useState('nakit');
-  const [groupOpen, setGroupOpen] = useState(() => {
-    try { const k = localStorage.getItem('tf-ozet-open'); localStorage.removeItem('tf-ozet-open'); return k ? { [k]: true } : {}; } catch { return {}; }
+  const [initKey] = useState(() => {
+    try { const k = localStorage.getItem('tf-ozet-open'); localStorage.removeItem('tf-ozet-open'); return k || null; } catch { return null; }
   });
+  const [view, setView] = useState(initKey && initKey[0] === 'k' ? 'kart' : 'nakit');
+  const [groupOpen, setGroupOpen] = useState(initKey ? { [initKey]: true } : {});
   const [itemOpen, setItemOpen] = useState(null);
   const [limitOpen, setLimitOpen] = useState(false);
   const [cardOpen, setCardOpen] = useState(false);
@@ -1554,16 +1541,17 @@ function OzetScreen({ ctx }) {
         <div class=${'big ' + (b.left < 0 ? 'neg' : 'pos')}>${tl(b.left)}</div>
       </div>
     ` : html`
-      <div class="card rows">
-        <div class="row pad"><span>Kart limiti</span><b>${tl(limit)}</b></div>
-        <div class="row pad"><span>Kullanılan</span><b>${tl(used)}</b></div>
-        <div class="row pad"><span>Kalan limit</span><b class=${limit - used < limit * 0.2 ? 'warn' : 'pos'}>${tl(Math.max(0, limit - used))}</b></div>
-      </div>
       <${OzetGroup} title="Kart ödemesi" total=${b.cardAmt} open=${!!groupOpen.kpay} onToggle=${() => toggleGroup('kpay')}>
         <div class="row pad"><span>Bu ay yaptığın ödeme</span><b>${tl(b.cardAmt)}</b></div>
       <//>
-      <${OzetGroup} title="Kartta harcamalar" total=${cardSpend} open=${!!groupOpen.kexp} onToggle=${() => toggleGroup('kexp')}>
-        ${renderItems(cards.map(c => ({ ...c, key: itemKey('kexp', c.it.id) })))}
+      <${OzetGroup} title="Aylık ödemelerden kartla" total=${sumBy(cards.filter(c => c.kind === 'Her ay'), c => c.amount)} open=${!!groupOpen.kfixed} onToggle=${() => toggleGroup('kfixed')}>
+        ${renderItems(cards.filter(c => c.kind === 'Her ay').map(c => ({ ...c, key: itemKey('kfixed', c.it.id) })))}
+      <//>
+      <${OzetGroup} title="Taksitlerden kartla" total=${sumBy(cards.filter(c => c.kind === 'Taksit'), c => c.amount)} open=${!!groupOpen.kinst} onToggle=${() => toggleGroup('kinst')}>
+        ${renderItems(cards.filter(c => c.kind === 'Taksit').map(c => ({ ...c, key: itemKey('kinst', c.it.id) })))}
+      <//>
+      <${OzetGroup} title="Harcamalardan kartla" total=${sumBy(cards.filter(c => c.kind === 'Harcama'), c => c.amount)} open=${!!groupOpen.kexp} onToggle=${() => toggleGroup('kexp')}>
+        ${renderItems(cards.filter(c => c.kind === 'Harcama').map(c => ({ ...c, key: itemKey('kexp', c.it.id) })))}
         ${!cards.length && html`<${Empty}>Bu ay kartla yapılan kayıt yok<//>`}
       <//>
       <div class="card hero center-text">
@@ -1577,6 +1565,46 @@ function OzetScreen({ ctx }) {
     <p class="hint">Sola ya da sağa kaydırarak nakit ve kredi kartı görünümleri arasında geçebilirsin.</p>
     ${limitOpen && html`<${CardLimitSheet} ctx=${ctx} onClose=${() => setLimitOpen(false)} />`}
     ${cardOpen && html`<${CardSheet} ctx=${ctx} month=${m} onClose=${() => setCardOpen(false)} />`}`;
+}
+
+/** Bu Ay'daki kredi kartı paneli: limit, kullanılan, kalan; kartla yapılan kalemler okla Özet'e gider */
+function CardPanel({ ctx, m }) {
+  const { rows, uid, fin } = ctx;
+  const [limitOpen, setLimitOpen] = useState(false);
+  const [cardOpen, setCardOpen] = useState(false);
+  const card = cardFor(rows, uid, m);
+  const cardAmt = card ? Number(card.amount) || 0 : 0;
+  const limit = Number(fin.card_limit) || 0;
+  const used = cardUsedNowFor(fin, rows, uid);
+  const remain = Math.max(0, limit - used);
+  const cards = cardItems(rows, uid, m);
+  const sumKind = k => sumBy(cards.filter(c => c.kind === k), c => c.amount);
+  const debtLeft = Math.max(0, (Number(fin.card_debt) || 0) - cardAmt);
+  const row = (key, label, value) => html`
+    <div class="row"><span>${label}</span>
+      <span class="flow-right"><b>${value}</b><button class="flow-btn" aria-label="Detayını gör" onClick=${() => ctx.goOzet(key)}>›</button></span></div>`;
+  return html`
+    <div class="group">
+      <div class="card hero">
+        <div class="muted">Kredi kartı limiti</div>
+        <div class="big">${tl(limit)}</div>
+        <div class="rows">
+          <div class="row"><span>Kullanılan</span><b>${tl(used)}</b></div>
+          <div class="row"><span>Kalan</span><b class=${limit && remain < limit * 0.2 ? 'warn' : 'pos'}>${tl(remain)}</b></div>
+        </div>
+        <button class="link small" onClick=${() => setLimitOpen(true)}>💳 Kart bilgilerini güncelle</button>
+      </div>
+      <div class="card rows">
+        ${row('kpay', 'Bu ay kart ödemesi', card ? tl(cardAmt) : 'Girilmedi')}
+        ${row('kfixed', 'Aylık ödemelerden kartla', tl(sumKind('Her ay')))}
+        ${row('kinst', 'Taksitlerden kartla', tl(sumKind('Taksit')))}
+        ${row('kexp', 'Harcamalardan kartla', tl(sumKind('Harcama')))}
+        <div class="row"><span>Kalan kart borcu</span><b class=${debtLeft > 0 ? 'warn' : 'pos'}>${tl(debtLeft)}</b></div>
+        <div class="row"><span></span><button class="link small" onClick=${() => setCardOpen(true)}>${card ? 'Kart ödemesini düzenle' : 'Kart ödemesini gir'}</button></div>
+      </div>
+      ${limitOpen && html`<${CardLimitSheet} ctx=${ctx} onClose=${() => setLimitOpen(false)} />`}
+      ${cardOpen && html`<${CardSheet} ctx=${ctx} month=${m} onClose=${() => setCardOpen(false)} />`}
+    </div>`;
 }
 
 /** Bu Ay'daki nakit dökümü: her satırın okuna basınca Özet'te ilgili grup açılır */
