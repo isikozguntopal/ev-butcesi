@@ -498,7 +498,6 @@ function MonthScreen({ ctx }) {
         <div class="rows">
           <div class="row"><span>Gelir</span><b>${tl(income)}</b></div>
           ${carryAmt !== 0 && html`<div class="row"><span>Önceki aydan devir</span><b>${tl(carryAmt)}</b></div>`}
-          ${b.unpaid >= 1 && html`<div class="row"><span>Henüz ödenmedi</span><b class="warn">${tl(b.unpaid)}</b></div>`}
           <${BalanceFlow} ctx=${ctx} m=${m} income=${income} />
         </div>
       </div>
