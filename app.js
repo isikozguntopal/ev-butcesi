@@ -94,14 +94,8 @@ const cardFor = (rows, uid, m) => rows.card_payments.find(c => c.owner_id === ui
 /** O aya devredilen nakit bakiye (manuel karar; 0 = devretme) */
 const carryFor = (rows, uid, m) => (rows.carryovers || []).find(c => c.owner_id === uid && c.month === m);
 /** Bir ayın nakit bakiyesi (devir dahil). Ekim 2026 öncesi veriler güvenilir değil, hesaba katılmaz. */
-function nakitLeftFor(rows, uid, m, income) {
-  const card = cardFor(rows, uid, m);
-  const cardAmt = card ? Number(card.amount) || 0 : 0;
-  const instT = sumBy(rows.installments.filter(i => inst.active(i, m) && !coveredByCard(i, uid, card)), i => share(i, Number(i.monthly_amount), uid));
-  const fixT = sumBy(rows.fixed_payments.filter(f => !coveredByCard(f, uid, card, 'fixed_payments')), f => share(f, Number(f.amount), uid));
-  const expT = sumBy(rows.expenses.filter(e => mk(e.date) === m && !coveredByCard(e, uid, card, 'expenses')), e => share(e, Number(e.amount), uid));
-  const c = carryFor(rows, uid, m);
-  return income - (cardAmt + instT + fixT + expT) + (c ? Number(c.amount) || 0 : 0);
+function nakitLeftFor(rows, uid, m, income, members) {
+  return nakitBreakdown(rows, uid, m, income, members).left;
 }
 /** O ay kart ödemesi girildiyse, benim kartımdan ödenen taksit ödemenin içindedir; ayrıca sayılmaz.
  *  Eşin kartındaki taksitler sayılmaya devam eder (payı ayın 5'inde eşe gönderilir). */
@@ -401,9 +395,6 @@ function MonthScreen({ ctx }) {
   const [m, setM] = useState(thisMonth());
   const [form, setForm] = useState(null);
 
-  const insts = rows.installments.filter(i => inst.active(i, m));
-  const fixed = rows.fixed_payments;
-  const exps = rows.expenses.filter(e => mk(e.date) === m).sort((a, b) => (a.date < b.date ? 1 : -1));
 
   const card = cardFor(rows, uid, m);
   const cardAmt = card ? Number(card.amount) || 0 : 0;
@@ -421,14 +412,6 @@ function MonthScreen({ ctx }) {
     if (dx < -50) setPage(1);
     if (dx > 50) setPage(0);
   };
-  const mine = (x, amt) => share(x, Number(amt), uid);
-  const counted = insts.filter(i => !coveredByCard(i, uid, card));
-  const instT = sumBy(counted, i => mine(i, i.monthly_amount));
-  const fixedCounted = fixed.filter(f => !coveredByCard(f, uid, card, 'fixed_payments'));
-  const expsCounted = exps.filter(e => !coveredByCard(e, uid, card, 'expenses'));
-  const fixT = sumBy(fixedCounted, f => mine(f, f.amount));
-  const expT = sumBy(expsCounted, e => mine(e, e.amount));
-  const total = cardAmt + instT + fixT + expT;
   // Kart harcaması: kartta bu ay yapılan tüm harcamalar (tam tutar). Nakit bakiyeden düşmez; kart ödemesiyle borçtan düşer.
   const cardSpend = sumBy(cardItems(rows, uid, m), x => x.amount);
   const [limitOpen, setLimitOpen] = useState(false);
@@ -439,9 +422,6 @@ function MonthScreen({ ctx }) {
   const paidSince = usedAt ? sumBy((rows.card_payments || []).filter(c => c.owner_id === uid && c.created_at && new Date(c.created_at).toLocaleDateString('sv-SE') > usedAt), c => Number(c.amount) || 0) : 0;
   const cardUsed = (Number(fin.card_used) || 0) + newSpend - paidSince;
   const cardRemain = Math.max(0, (Number(fin.card_debt) || 0) - cardAmt);
-  const paidT = cardAmt + sumBy(counted.filter(i => isPaid(i, m)), i => mine(i, i.monthly_amount))
-    + sumBy(fixedCounted.filter(f => isPaid(f, m)), f => mine(f, f.amount))
-    + sumBy(expsCounted.filter(e => isPaid(e, m)), e => mine(e, e.amount));
   const inCard = card ? cardItems(rows, uid, m).length : 0;
   const cardTag = it => (it.payer_id === uid && onCardItem(it, it.monthly_amount != null ? 'installments' : it.date ? 'expenses' : 'fixed_payments')
     ? (card ? '💳 karta dahil, toplama eklenmez' : '💳 kartla') : null);
@@ -453,7 +433,8 @@ function MonthScreen({ ctx }) {
   const income = Number(fin.income) || 0;
   const carry = carryFor(rows, uid, m);
   const carryAmt = carry ? Number(carry.amount) || 0 : 0;
-  const left = income - total + carryAmt;
+  const b = nakitBreakdown(rows, uid, m, income, ctx.members);
+  const left = b.left;
 
   const toggle = (table, it) => {
     const p = it.paid_months || [];
@@ -480,7 +461,7 @@ function MonthScreen({ ctx }) {
   /** Ortak kalemde eşin o ay kendi tikini attı mı */
   const partnerTag = it => (it.shared && partner
     ? `${partner.display_name} ${isPaid(it, m, partner.user_id) ? 'ödedi ✓' : 'ödemedi'}` : null);
-  const allPaid = total > 0 && paidT >= total;
+  const allPaid = b.out > 0 && b.unpaid < 1;
   const debtNow = sumBy(rows.installments, i => share(i, Number(i.monthly_amount), uid) * inst.remaining(i, thisMonth()));
   const say = !income ? 'Merhaba! Önce Ben → Birikimim bölümüne gelirini yazalım mı? 🥕'
     : allPaid ? 'Bu ayın bütün ödemeleri tamam, harikasınız! 🎉'
@@ -517,7 +498,7 @@ function MonthScreen({ ctx }) {
         <div class="rows">
           <div class="row"><span>Gelir</span><b>${tl(income)}</b></div>
           ${carryAmt !== 0 && html`<div class="row"><span>Önceki aydan devir</span><b>${tl(carryAmt)}</b></div>`}
-          ${Math.round((total - paidT) * 100) > 0 && html`<div class="row"><span>Henüz ödenmedi</span><b class="warn">${tl(total - paidT)}</b></div>`}
+          ${b.unpaid >= 1 && html`<div class="row"><span>Henüz ödenmedi</span><b class="warn">${tl(b.unpaid)}</b></div>`}
           <${BalanceFlow} ctx=${ctx} m=${m} income=${income} />
         </div>
       </div>
@@ -541,7 +522,7 @@ function MonthScreen({ ctx }) {
     ${cardOpen && html`<${CardSheet} ctx=${ctx} month=${m} onClose=${() => setCardOpen(false)} />`}
     ${detail && html`<${RecordDetail} ctx=${ctx} m=${m} rec=${detail} onClose=${() => setDetail(null)} onEdit=${() => { setForm({ kind: detail.kind, item: detail.it }); setDetail(null); }} />`}
     ${taksitOpen && html`<${TaksitSheet} ctx=${ctx} onAdd=${() => setForm({ kind: 'installment' })} onClose=${() => setTaksitOpen(false)} />`}
-    ${balOpen && html`<${BalanceSheet} ctx=${ctx} expected=${income - paidT} onClose=${() => setBalOpen(false)} />`}`;
+    ${balOpen && html`<${BalanceSheet} ctx=${ctx} expected=${b.left + b.unpaid} onClose=${() => setBalOpen(false)} />`}`;
 }
 
 // ---------- Bakiye eşitleme ----------
@@ -1484,15 +1465,28 @@ function nakitBreakdown(rows, uid, m, income, members) {
   });
   // Ortak kalemler: nakit etkisi hesaplaşma ayında (bir sonraki ayın 5'inde).
   // Hesaplaşma dışı gönderilenler (":sent") ise harcamanın kendi ayında düşer.
-  const sPrev = settlementFor(rows, members || [], addM(m, -1));
-  const settleIn = sPrev && sPrev.amount >= 1 ? (sPrev.from === uid ? -sPrev.amount : sPrev.amount) : 0;
-  const directOut = -sumBy(items.filter(({ it }) => it.shared && it.split === 'half' && it.payer_id !== uid
-    && (it.paid_months || []).includes(`${paidKey(m, uid)}:sent`)), ({ amt }) => amt / 2);
+  // Gönderildi/alındı işaretlendiyse kayıttaki tutar esas alınır; yoksa kalemlerden hesaplanır.
+  // Ekim 2026 öncesi aylar uygulamada takip edilmedi; onların hesaplaşması sayılmaz.
+  const prevM = addM(m, -1);
+  const prevRec = (rows.settlements || []).find(x => x.month === prevM);
+  const prevDone = !!(prevRec?.sent_at || prevRec?.received_at);
+  const sPrev = prevM >= '2026-10' ? settlementFor(rows, members || [], prevM) : null;
+  const settleIn = prevDone
+    ? (prevRec.from_id === uid ? -Number(prevRec.amount) : prevRec.to_id === uid ? Number(prevRec.amount) : 0) || 0
+    : sPrev && sPrev.amount >= 1 ? (sPrev.from === uid ? -sPrev.amount : sPrev.amount) : 0;
+  // Ay içinde doğrudan gönderilen ortak harcama payları (hesaplaşmaya girmez): o ayın nakdinde
+  const sCur = settlementFor(rows, members || [], m);
+  const direct = sumBy(sCur?.sentDirect || [], x => (x.payer === uid ? x.debt : -x.debt));
   res.settleIn = Math.round(settleIn * 100) / 100;
-  res.settle = Math.round((settleIn + directOut) * 100) / 100;
+  res.settle = Math.round((settleIn + direct) * 100) / 100;
   const c = carryFor(rows, uid, m);
   res.carry = c ? Number(c.amount) || 0 : 0;
   res.left = income - cardAmt - res.expense - res.installment - res.fixed + res.settle + res.carry;
+  // Henüz ödenmedi: tiklenmemiş kendi nakit kalemlerim + henüz gönderilmemiş hesaplaşma borcum
+  const settleOwed = settleIn < 0 && !prevDone ? -settleIn : 0;
+  const unpaidItems = ['expense', 'installment', 'fixed'].flatMap(k => res.items[k]).filter(({ it }) => !isPaid(it, m, uid));
+  res.unpaid = Math.round((settleOwed + sumBy(unpaidItems, ({ amt }) => amt)) * 100) / 100;
+  res.out = cardAmt + res.expense + res.installment + res.fixed + Math.max(0, -res.settle);
   return res;
 }
 
@@ -2187,7 +2181,7 @@ function App() {
     let asked = false;
     try { asked = sessionStorage.getItem(`tf-carry-asked-${now}`) === '1'; } catch { /* yok say */ }
     if (asked) return;
-    const left = nakitLeftFor(rows, user.id, prev, Number(fin?.income) || 0);
+    const left = nakitLeftFor(rows, user.id, prev, Number(fin?.income) || 0, members);
     if (left > 0) setAskCarry({ prev, now, amount: Math.round(left) });
   }, [phase, rows === null, askCard]);
   const closeCardAsk = () => {
