@@ -9,6 +9,14 @@ import { VAPID_PUBLIC_KEY, APP_NAME } from './config.js';
 const tlFmt = new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY', minimumFractionDigits: 0, maximumFractionDigits: 2 });
 const usdFmt = new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'USD', minimumFractionDigits: 0, maximumFractionDigits: 2 });
 const tl = v => tlFmt.format(Number(v) || 0);
+/** Ekranın sol kenarından başlayan dokunuş: geri gitme hareketi için ayrılır */
+const EDGE_PX = 24;
+/** Bakiye satırı: 0 ise işaretsiz, değilse + (yeşil) ya da − (kırmızı) */
+const signed = (v, plus = Number(v) > 0) => {
+  const n = Math.round((Number(v) || 0) * 100) / 100;
+  if (!n) return { text: tl(0), tone: '' };
+  return plus ? { text: `+ ${tl(Math.abs(n))}`, tone: 'pos' } : { text: `− ${tl(Math.abs(n))}`, tone: 'neg' };
+};
 const usd = v => usdFmt.format(Number(v) || 0);
 const eurFmt = new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'EUR', minimumFractionDigits: 0, maximumFractionDigits: 2 });
 const eur = v => eurFmt.format(Number(v) || 0);
@@ -405,7 +413,7 @@ function MonthScreen({ ctx }) {
   const [detail, setDetail] = useState(null);
   const [page, setPage] = useState(0);
   const touchX = useRef(null);
-  const onTouchStart = e => { touchX.current = e.touches[0].clientX; };
+  const onTouchStart = e => { touchX.current = e.touches[0].clientX < EDGE_PX ? null : e.touches[0].clientX; };
   const onTouchEnd = e => {
     if (touchX.current == null) return;
     const dx = e.changedTouches[0].clientX - touchX.current;
@@ -509,8 +517,7 @@ function MonthScreen({ ctx }) {
         <div class="rows">
           <div class="row"><span>Gelir</span><b>${tl(income)}</b></div>
           ${carryAmt !== 0 && html`<div class="row"><span>Önceki aydan devir</span><b>${tl(carryAmt)}</b></div>`}
-          <div class="row"><span>Ödendi / bu ay toplam</span><b><span class="muted">${tl(paidT)}</span> / ${tl(total)}</b></div>
-          <div class="row"><span>Henüz ödenmedi</span><b class="warn">${tl(total - paidT)}</b></div>
+          ${Math.round((total - paidT) * 100) > 0 && html`<div class="row"><span>Henüz ödenmedi</span><b class="warn">${tl(total - paidT)}</b></div>`}
           <${BalanceFlow} ctx=${ctx} m=${m} income=${income} />
         </div>
       </div>
@@ -1158,7 +1165,8 @@ function WishScreen({ ctx, embedded }) {
     <div class="card rows">
       <div class="row"><span>Alınacak ${open.length} şey</span><b>${tl(sumBy(open, w => Number(w.price)))}</b></div>
     </div>
-    ${!open.length && html`<div class="card"><${Empty}>Çekyat, dresuar, kahvelik… "+" ile ekleyin<//></div>`}
+    <button class="add-row" onClick=${() => setForm({})}>+ Yeni alacak ekle</button>
+    ${!open.length && html`<div class="card"><${Empty}>Çekyat, dresuar, kahvelik… yukarıdan ekleyin<//></div>`}
     ${keys.map(k => html`
       <${Group} key=${k} title=${k ? monthName(k) : 'Zamanı belli değil'} total=${sumBy(groups[k], w => Number(w.price))}>
         ${groups[k].map(w => html`
@@ -1181,7 +1189,6 @@ function WishScreen({ ctx, embedded }) {
           </div>`)}
       <//>`}`}
 
-    <button class="fab" onClick=${() => setForm({})} aria-label="Ekle">+</button>
     ${form && html`<${WishForm} ctx=${ctx} item=${form.item} onClose=${() => setForm(null)} />`}
     ${buying && html`<${ItemForm} ctx=${ctx} kind="expense"
       preset=${{ name: buying.name, amount: Number(buying.price), shared: true }}
@@ -1326,8 +1333,6 @@ function SettingsView({ ctx }) {
     ${members.length < 2 && !DEMO && html`<p class="hint">Eşin uygulamada hesap açıp "Davet koduyla katıl" deyip bu kodu girsin.</p>`}
 
     <${Group} title="Harcama butonu">
-      <label class="field toggle"><span>Hayvan ve para süslemeleri<small>Butonun üstündeki emojiler</small></span>
-        <input type="checkbox" checked=${fab.decor} onChange=${e => setFab('tf-fab-decor', e.target.checked ? '1' : '0')} /></label>
       <label class="field toggle"><span>Yerini kilitle<small>Kapalıyken sürükleyip kenara bırakabilirsin</small></span>
         <input type="checkbox" checked=${fab.locked} onChange=${e => setFab('tf-fab-lock', e.target.checked ? '1' : '0')} /></label>
     <//>
@@ -1463,7 +1468,7 @@ function RecordDetail({ ctx, m, rec, onEdit, onClose }) {
 // ---------- Bakiye özeti ----------
 
 /** Nakit bakiyenin dökümü. Hesaplaşma satırı, ortak kalemlerin mahsuplaşmış net tutarıdır. */
-function nakitBreakdown(rows, uid, m, income) {
+function nakitBreakdown(rows, uid, m, income, members) {
   const card = cardFor(rows, uid, m);
   const cardAmt = card ? Number(card.amount) || 0 : 0;
   const res = { income, cardAmt, expense: 0, installment: 0, fixed: 0, meHalf: 0, pHalf: 0, items: { expense: [], installment: [], fixed: [] } };
@@ -1477,7 +1482,14 @@ function nakitBreakdown(rows, uid, m, income) {
     if (it.payer_id === uid) { res[kind] += amt; res.items[kind].push({ it, amt }); if (it.split === 'half') res.meHalf += amt; }
     else if (it.split === 'half') res.pHalf += amt;
   });
-  res.settle = Math.round(((res.meHalf - res.pHalf) / 2) * 100) / 100;
+  // Ortak kalemler: nakit etkisi hesaplaşma ayında (bir sonraki ayın 5'inde).
+  // Hesaplaşma dışı gönderilenler (":sent") ise harcamanın kendi ayında düşer.
+  const sPrev = settlementFor(rows, members || [], addM(m, -1));
+  const settleIn = sPrev && sPrev.amount >= 1 ? (sPrev.from === uid ? -sPrev.amount : sPrev.amount) : 0;
+  const directOut = -sumBy(items.filter(({ it }) => it.shared && it.split === 'half' && it.payer_id !== uid
+    && (it.paid_months || []).includes(`${paidKey(m, uid)}:sent`)), ({ amt }) => amt / 2);
+  res.settleIn = Math.round(settleIn * 100) / 100;
+  res.settle = Math.round((settleIn + directOut) * 100) / 100;
   const c = carryFor(rows, uid, m);
   res.carry = c ? Number(c.amount) || 0 : 0;
   res.left = income - cardAmt - res.expense - res.installment - res.fixed + res.settle + res.carry;
@@ -1500,7 +1512,7 @@ const OzetGroup = ({ title, total, open, onToggle, children, sign = 'out' }) => 
     <div class="group">
       <button class="group-head fold" onClick=${onToggle} aria-expanded=${open}>
         <span><span class=${'chev' + (open ? ' open' : '')}>›</span>${title}</span>
-        <span class=${'g-total ' + (plus ? 'pos' : 'neg')}>${plus ? '+' : '−'} ${tl(Math.abs(v))}</span>
+        <span class=${'g-total ' + signed(v, plus).tone}>${signed(v, plus).text}</span>
       </button>
       ${open && html`<div class="card">${children}</div>`}
     </div>`;
@@ -1517,7 +1529,7 @@ function OzetItem({ ctx, m, it, table, kind, amt, open, onToggle, sign = 'out' }
       <button class="item" onClick=${onToggle}>
         <span class="grow"><span class="title">${it.name}</span>
           <span class="sub">${kind === 'installment' ? `${inst.remaining(it, m)} taksit kaldı · ` : ''}${it.on_card ? 'kredi kartı' : 'nakit'}${it.shared ? ` · ortak (${payer} ödedi)` : ''}</span></span>
-        <span class=${'amt ' + (sign === 'in' ? 'pos' : 'neg')}>${sign === 'in' ? '+' : '−'} ${tl(amt)}</span>
+        <span class=${'amt ' + signed(amt, sign === 'in').tone}>${signed(amt, sign === 'in').text}</span>
       </button>
       ${open && html`<div class="detail-inline">
         <div class="row pad"><span>Ne zaman açıldı</span><b>${fmtDate(started)}</b></div>
@@ -1530,7 +1542,10 @@ function OzetItem({ ctx, m, it, table, kind, amt, open, onToggle, sign = 'out' }
 
 function OzetScreen({ ctx }) {
   const { rows, uid, fin, members, names } = ctx;
-  const [m, setM] = useState(thisMonth());
+  // Bu Ay'daki bir satırın okundan gelindiyse o ayı aç
+  const [m, setM] = useState(() => {
+    try { const x = localStorage.getItem('tf-ozet-month'); localStorage.removeItem('tf-ozet-month'); return x || thisMonth(); } catch { return thisMonth(); }
+  });
   const [initKey] = useState(() => {
     try { const k = localStorage.getItem('tf-ozet-open'); localStorage.removeItem('tf-ozet-open'); return k || null; } catch { return null; }
   });
@@ -1540,8 +1555,8 @@ function OzetScreen({ ctx }) {
   const [limitOpen, setLimitOpen] = useState(false);
   const [cardOpen, setCardOpen] = useState(false);
   const touch = useRef(null);
-  const b = nakitBreakdown(rows, uid, m, Number(fin.income) || 0);
-  const s = settlementFor(rows, members, m);
+  const b = nakitBreakdown(rows, uid, m, Number(fin.income) || 0, members);
+  const sPrev = settlementFor(rows, members, addM(m, -1));
   const cards = cardItems(rows, uid, m);
   const cardSpend = sumBy(cards, x => x.amount);
   const limit = Number(fin.card_limit) || 0;
@@ -1550,7 +1565,7 @@ function OzetScreen({ ctx }) {
   const who = id => (id === uid ? 'Sen' : names[id] || 'Eşin');
   const toggleGroup = k => setGroupOpen({ ...groupOpen, [k]: !groupOpen[k] });
   const itemKey = (k, id) => `${k}:${id}`;
-  const onTouchStart = e => { touch.current = e.touches[0].clientX; };
+  const onTouchStart = e => { touch.current = e.touches[0].clientX < EDGE_PX ? null : e.touches[0].clientX; };
   const onTouchEnd = e => {
     if (touch.current == null) return;
     const dx = e.changedTouches[0].clientX - touch.current;
@@ -1576,10 +1591,10 @@ function OzetScreen({ ctx }) {
     <div class="swipe" onTouchStart=${onTouchStart} onTouchEnd=${onTouchEnd}>
     ${view === 'nakit' ? html`
       <div class="card row pad"><span>Gelir</span><b class="pos">${tl(b.income)}</b></div>
-      <${OzetGroup} sign="auto" title="Hesaplaşma" total=${b.settle} open=${!!groupOpen.settle} onToggle=${() => toggleGroup('settle')}>
-        ${(s?.lines || []).map(l => html`<div class="row pad" key=${l.id}><span>${l.name}<small class="muted"> · ${l.kind} · ${who(l.payer)} ödedi</small></span><b>${tl(l.amount / 2)}</b></div>`)}
-        <div class="row pad"><span>${b.settle >= 0 ? 'Sana gelecek' : 'Sana gidecek'}</span><b class=${b.settle >= 0 ? 'pos' : 'warn'}>${tl(Math.abs(b.settle))}</b></div>
-        ${!s?.lines?.length && html`<${Empty}>Bu ay ortak kalem yok<//>`}
+      <${OzetGroup} sign="auto" title="Hesaplaşma" total=${b.settleIn} open=${!!groupOpen.settle} onToggle=${() => toggleGroup('settle')}>
+        ${(sPrev?.lines || []).map(l => html`<div class="row pad" key=${l.id}><span>${l.name}<small class="muted"> · ${l.kind} · ${who(l.payer)} ödedi</small></span><b>${tl(l.amount / 2)}</b></div>`)}
+        <div class="row pad"><span>${b.settleIn >= 0 ? 'Sana gelecek' : 'Sana gidecek'}</span><b class=${b.settleIn >= 0 ? 'pos' : 'warn'}>${tl(Math.abs(b.settleIn))}</b></div>
+        ${!sPrev?.lines?.length && html`<${Empty}>Bu ay ödenecek ortak kalem yok<//>`}
       <//>
       <${OzetGroup} title="Kredi kartı ödemesi" total=${b.cardAmt} open=${!!groupOpen.card} onToggle=${() => toggleGroup('card')}>
         <div class="row pad"><span>Bu ay yaptığın kart ödemesi</span><b>${tl(b.cardAmt)}</b></div>
@@ -1659,9 +1674,12 @@ function CardPanel({ ctx, m }) {
   const cards = cardItems(rows, uid, m);
   const sumKind = k => sumBy(cards.filter(c => c.kind === k), c => c.amount);
   const debtLeft = Math.max(0, (Number(fin.card_debt) || 0) - cardAmt);
-  const row = (key, label, value, sign) => html`
+  const row = (key, label, amt, sign) => {
+    const s = amt == null ? { text: 'Girilmedi', tone: 'muted' } : signed(amt, sign === 'in');
+    return html`
     <div class="row"><span>${label}</span>
-      <span class="flow-right"><b class=${sign === 'in' ? 'pos' : 'neg'}>${sign === 'in' ? '+' : '−'} ${value}</b><button class="flow-btn" aria-label="Detayını gör" onClick=${() => ctx.goOzet(key)}>›</button></span></div>`;
+      <span class="flow-right"><b class=${s.tone}>${s.text}</b><button class="flow-btn" aria-label="Detayını gör" onClick=${() => ctx.goOzet(key, m)}>›</button></span></div>`;
+  };
   return html`
     <div class="group">
       <div class="card hero">
@@ -1669,10 +1687,10 @@ function CardPanel({ ctx, m }) {
         <button class="link small" onClick=${() => setLimitOpen(true)}>💳 Kart bilgilerini güncelle</button>
       </div>
       <div class="card rows">
-        ${row('kpay', 'Bu ay kart ödemesi', card ? tl(cardAmt) : 'Girilmedi', 'in')}
-        ${row('kfixed', 'Aylık ödemelerden kartla', tl(sumKind('Her ay')), 'out')}
-        ${row('kinst', 'Taksitlerden kartla', tl(sumKind('Taksit')), 'out')}
-        ${row('kexp', 'Harcamalardan kartla', tl(sumKind('Harcama')), 'out')}
+        ${row('kpay', 'Bu ay kart ödemesi', card ? cardAmt : null, 'in')}
+        ${row('kfixed', 'Aylık ödemelerden kartla', sumKind('Her ay'), 'out')}
+        ${row('kinst', 'Taksitlerden kartla', sumKind('Taksit'), 'out')}
+        ${row('kexp', 'Harcamalardan kartla', sumKind('Harcama'), 'out')}
         <div class="row"><span>Kalan kart borcu</span><b class=${debtLeft > 0 ? 'warn' : 'pos'}>${tl(debtLeft)}</b></div>
         <div class="row"><span></span><button class="link small" onClick=${() => setCardOpen(true)}>${card ? 'Kart ödemesini düzenle' : 'Kart ödemesini gir'}</button></div>
       </div>
@@ -1683,16 +1701,19 @@ function CardPanel({ ctx, m }) {
 
 /** Bu Ay'daki nakit dökümü: her satırın okuna basınca Özet'te ilgili grup açılır */
 function BalanceFlow({ ctx, m, income }) {
-  const b = nakitBreakdown(ctx.rows, ctx.uid, m, income);
-  const line = (key, label, value, tone = '') => html`
+  const b = nakitBreakdown(ctx.rows, ctx.uid, m, income, ctx.members);
+  const line = (key, label, amt, plus) => {
+    const s = signed(amt, plus);
+    return html`
     <div class="row"><span>${label}</span>
-      <span class="flow-right"><b class=${tone}>${value}</b><button class="flow-btn" aria-label="Detayını gör" onClick=${() => ctx.goOzet(key)}>›</button></span></div>`;
+      <span class="flow-right"><b class=${s.tone}>${s.text}</b><button class="flow-btn" aria-label="Detayını gör" onClick=${() => ctx.goOzet(key, m)}>›</button></span></div>`;
+  };
   return html`<div>
-    ${line('settle', 'Hesaplaşma', tl(b.settle), b.settle >= 0 ? 'pos' : 'warn')}
-    ${line('card', 'Kredi kartı ödemesi', `− ${tl(b.cardAmt)}`)}
-    ${line('fixed', 'Aylık ödemeler', `− ${tl(b.fixed)}`)}
-    ${line('installment', 'Taksitler', `− ${tl(b.installment)}`)}
-    ${line('expense', 'Harcamalar', `− ${tl(b.expense)}`)}
+    ${!!b.settle && line('settle', 'Hesaplaşma', b.settle)}
+    ${!!b.cardAmt && line('card', 'Kredi kartı ödemesi', b.cardAmt, false)}
+    ${!!b.fixed && line('fixed', 'Aylık ödemeler', b.fixed, false)}
+    ${!!b.installment && line('installment', 'Taksitler', b.installment, false)}
+    ${!!b.expense && line('expense', 'Harcamalar', b.expense, false)}
   </div>`;
 }
 
@@ -2016,8 +2037,8 @@ const TABS = [
 
 /** Her sekmede duran, sürüklenebilir "Harcama ekle" butonu */
 const fabPrefs = () => {
-  try { return { decor: localStorage.getItem('tf-fab-decor') !== '0', locked: localStorage.getItem('tf-fab-lock') === '1' }; }
-  catch { return { decor: true, locked: false }; }
+  try { return { locked: localStorage.getItem('tf-fab-lock') === '1' }; }
+  catch { return { locked: false }; }
 };
 
 function QuickAdd({ onTap }) {
@@ -2056,15 +2077,15 @@ function QuickAdd({ onTap }) {
     // Bırakınca en yakın kenara yapış (ortada kalmasın)
     const r = wrap.current.getBoundingClientRect();
     const midX = latest.current.x + r.width / 2;
-    latest.current = { x: midX < window.innerWidth / 2 ? 8 : window.innerWidth - r.width - 8, y: latest.current.y };
+    latest.current = { x: midX < window.innerWidth / 2 ? 0 : window.innerWidth - r.width, y: latest.current.y };
     setPos(latest.current);
     try { localStorage.setItem('tf-fab', JSON.stringify(latest.current)); } catch { /* yok say */ }
   };
   return html`
-    <div class="quick-wrap" ref=${wrap} style=${pos ? `left:${pos.x}px;top:${pos.y}px;right:auto;bottom:auto` : ''}
+    <div class="quick-wrap" ref=${wrap} style=${pos ? `left:${Math.min(pos.x, window.innerWidth - 80)}px;top:${pos.y}px;right:auto;bottom:auto` : ''}
       onPointerDown=${down} onPointerMove=${move} onPointerUp=${up} onPointerCancel=${() => { drag.current = null; }}>
-      ${prefs.decor && html`<div class="quick-deco"><span>${dailyFace(5)}</span><span>💸</span><span>${dailyFace(2)}</span><span>📉</span></div>`}
       <button class="quick-btn" aria-label="Harcama ekle">+</button>
+      <span class="quick-label">Harcama gir</span>
     </div>`;
 }
 
@@ -2088,6 +2109,33 @@ function App() {
       return t;
     } catch { return 'month'; }
   });
+
+  const hist = useRef([]);
+  const edge = useRef(null);
+  const goTab = id => {
+    if (id === tab) return;
+    hist.current = [...hist.current.slice(-19), tab];
+    setTab(id);
+    window.scrollTo(0, 0);
+  };
+  const back = () => {
+    const prev = hist.current.pop();
+    if (!prev) return;
+    setTab(prev);
+    window.scrollTo(0, 0);
+  };
+  const onEdgeStart = e => {
+    const t = e.touches[0];
+    edge.current = t.clientX < EDGE_PX ? { x: t.clientX, y: t.clientY } : null;
+  };
+  const onEdgeEnd = e => {
+    const s = edge.current;
+    edge.current = null;
+    // Açık bir pencere (sayfa, form, onay) varsa geri gitme yapılmaz
+    if (!s || quick || askCard || exitingShow || askCarry || document.querySelector('.backdrop')) return;
+    const t = e.changedTouches[0];
+    if (t.clientX - s.x > 70 && Math.abs(t.clientY - s.y) < 60) back();
+  };
 
   async function reload() {
     const entries = await Promise.all(TABLES.map(async t => [t, await api.select(t)]));
@@ -2189,8 +2237,8 @@ function App() {
 
   ME = user.id;
   const ctx = { uid: user.id, rows, actions, members, names, fin, saveFin, household, signOut, askExitShow: () => setExitingShow(true),
-    goOzet: key => { try { localStorage.setItem('tf-ozet-open', key); } catch { /* yok say */ } setTab('ozet'); window.scrollTo(0, 0); },
-    goSettle: () => { try { localStorage.setItem('tf-ben-page', 'settle'); } catch { /* yok say */ } setTab('money'); window.scrollTo(0, 0); },
+    goOzet: (key, month) => { try { localStorage.setItem('tf-ozet-open', key); if (month) localStorage.setItem('tf-ozet-month', month); } catch { /* yok say */ } goTab('ozet'); },
+    goSettle: () => { try { localStorage.setItem('tf-ben-page', 'settle'); } catch { /* yok say */ } goTab('money'); },
     savePrefs: async prefs => {
       setMembers(ms => ms.map(m => (m.user_id === user.id ? { ...m, notify_prefs: prefs } : m)));
       await guard(() => api.saveNotifyPrefs(user.id, prefs));
@@ -2198,7 +2246,7 @@ function App() {
   const Screen = { month: MonthScreen, shop: ListsScreen, ozet: OzetScreen, settle: SettleScreen, money: BenScreen }[tab] || MonthScreen;
 
   return html`
-    <main class="screen">
+    <main class="screen" onTouchStart=${onEdgeStart} onTouchEnd=${onEdgeEnd}>
       ${SHOW
         ? html`<button class="demo-badge show" onClick=${() => setExitingShow(true)}>🎭 Gösterim modu · çıkmak için dokun</button>`
         : DEMO && html`<div class="demo-badge">Deneme modu</div>`}
@@ -2213,7 +2261,7 @@ function App() {
     ${quick && html`<${ItemForm} ctx=${ctx} kind="expense" month=${thisMonth()} onClose=${() => setQuick(false)} />`}
     <nav class="tabs">
       ${TABS.map(([id, label, icon]) => html`
-        <button class=${tab === id ? 'on' : ''} onClick=${() => { setTab(id); window.scrollTo(0, 0); }}>
+        <button class=${tab === id ? 'on' : ''} onClick=${() => goTab(id)}>
           <span class="ti">${icon}</span><span>${label}</span>
         </button>`)}
     </nav>`;
