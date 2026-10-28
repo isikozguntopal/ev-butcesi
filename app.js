@@ -1707,8 +1707,28 @@ const fmtDate = v => (v ? new Date(String(v).length === 7 ? `${v}-01` : v).toLoc
 
 /** Tek kaydın detayı: ne zaman açıldı, kaç ay kaldı, hangi karttan, bu ay ödendi mi */
 function RecordDetail({ ctx, m, rec, onEdit, onClose }) {
-  const { it, table, kind, amt } = rec;
-  const { uid, names, actions } = ctx;
+  const { it: base, table, kind, amt } = rec;
+  const { uid, names, actions, rows } = ctx;
+  // Güncel hali (fiş eklenince ekran yenilensin)
+  const it = (rows[table] || []).find(x => x.id === base.id) || base;
+  // Harcamanın fişi; yoksa aynı gün/tutardaki market alışverişinin fişi
+  const trip = kind === 'expense' && !it.receipt_path && String(it.name).startsWith('Market alışverişi')
+    ? (rows.shopping_trips || []).find(t => t.date === it.date && Number(t.total) === Number(it.amount) && t.receipt_path) : null;
+  const receipt = it.receipt_path || trip?.receipt_path || null;
+  async function setReceipt(blob) {
+    try {
+      const path = receiptPath(ctx);
+      await api.uploadReceipt(path, blob);
+      await actions.patch('expenses', it.id, { receipt_path: path });
+      if (it.receipt_path) api.removeReceipt(it.receipt_path).catch(() => {});
+    } catch (err) { alert('Fiş yüklenemedi: ' + err.message); }
+  }
+  async function dropReceipt() {
+    if (!confirm('Fiş fotoğrafı kaldırılsın mı?')) return;
+    const old = it.receipt_path;
+    await actions.patch('expenses', it.id, { receipt_path: null });
+    api.removeReceipt(old).catch(() => {});
+  }
   const paid = isPaid(it, m);
   const settled = (it.paid_months || []).includes(`${paidKey(m, uid)}:settled`);
   const payerName = it.payer_id === uid ? 'Sen' : names[it.payer_id] || 'Eşin';
@@ -1736,6 +1756,14 @@ function RecordDetail({ ctx, m, rec, onEdit, onClose }) {
         ${kind === 'installment' && html`<div class="row"><span>Kaç ay kaldı</span><b>${inst.remaining(it, m)} / ${inst.total(it)} taksit</b></div>`}
         ${kind === 'installment' && html`<div class="row"><span>Son taksit</span><b>${shortMonth(inst.last(it))}</b></div>`}
       </div>
+      ${kind === 'expense' && html`<${Group} title="Fiş">
+        <div class="pad receipt-box">
+          ${receipt ? html`<${ReceiptImage} path=${receipt} key=${receipt} />` : html`<div class="muted">Fiş fotoğrafı yok</div>`}
+          ${trip && html`<small class="muted">Market alışverişinin fişi</small>`}
+          <${PhotoButton} label=${it.receipt_path ? '📷 Fişi değiştir' : '📷 Fiş fotoğrafı ekle'} onPick=${setReceipt} />
+          ${it.receipt_path && html`<button class="link small" onClick=${dropReceipt}>Fişi kaldır</button>`}
+        </div>
+      <//>`}
       <div class="card hero center-text">
         <div class="muted">${monthName(m)} için</div>
         <div class=${'big ' + (paid ? 'pos' : 'warn')}>${paid ? 'Ödendi ✓' : 'Ödenmedi'}</div>

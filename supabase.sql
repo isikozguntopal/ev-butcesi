@@ -322,3 +322,6 @@ create policy "fis ekle" on storage.objects for insert
   with check (bucket_id = 'receipts' and (storage.foldername(name))[1] = public.my_household()::text);
 create policy "fis sil" on storage.objects for delete
   using (bucket_id = 'receipts' and (storage.foldername(name))[1] = public.my_household()::text);
+
+-- Harcama kaydına fiş fotoğrafı (migrations/015)
+alter table expenses add column if not exists receipt_path text;
