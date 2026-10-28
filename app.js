@@ -291,7 +291,7 @@ function ItemForm({ ctx, kind: initialKind, item, preset, month, onClose, onSave
   // Ödeme şekli: kart (kart ödemesine dahil) / nakit / henüz ödenmedi (sadece harcama)
   const initialMethod = item
     ? (onCardItem(item, table) ? 'card' : kind === 'expense' && !isPaid(item, mk(item.date)) ? 'unpaid' : 'cash')
-    : kind === 'fixed' ? 'cash' : 'card';
+    : kind === 'fixed' || src.on_card === false ? 'cash' : 'card';
   let method = methodPick || initialMethod;
   if (method === 'unpaid' && kind !== 'expense') method = 'cash';
   const showMethod = !shared || payer === uid;
@@ -701,6 +701,43 @@ function CardSheet({ ctx, month, prompt, onClose }) {
 
 const LOG_LABEL = { sent: 'Gönderdim', unsent: '"Gönderdim" işaretini kaldırdı', received: 'Parayı aldım', unreceived: '"Aldım" işaretini kaldırdı' };
 
+/** Hesaplaşmaya "Gönderdim" / "Parayı aldım" işaretini koyar ya da kaldırır; her adım log'a yazılır.
+ *  İşaret konunca o ayın ortak kalemlerinde borçlu "ödedi" olur. Banka hareketinden eşleştirmede de kullanılır. */
+async function settleMark(ctx, m, kind, on) {
+  const { rows, members, names, uid, actions } = ctx;
+  const s = settlementFor(rows, members, m);
+  if (!s) return false;
+  const rec = rows.settlements.find(x => x.month === m);
+  const now = new Date().toISOString();
+  const entry = { at: now, by: uid, action: on ? kind : `un${kind}`, amount: s.amount };
+  const patch = kind === 'sent'
+    ? { sent_at: on ? now : null, sent_by: on ? uid : null }
+    : { received_at: on ? now : null, received_by: on ? uid : null };
+  const base = { amount: s.amount, from_id: s.from, to_id: s.to };
+  const ok = rec
+    ? await actions.patch('settlements', rec.id, { ...base, ...patch, log: [...(rec.log || []), entry] })
+    : await actions.add('settlements', { month: m, ...base, ...patch, log: [entry] });
+  if (ok !== false && on) {
+    for (const l of s.lines) {
+      const debtor = l.payer === s.A ? s.B : s.A;
+      const it = rows[l.table].find(x => x.id === l.id);
+      const key = paidKey(l.table === 'expenses' && it?.date ? mk(it.date) : m, debtor);
+      const p = it?.paid_months || [];
+      if (it && !p.includes(`${key}:settled`)) {
+        await actions.patch(l.table, l.id, { paid_months: [...p.filter(x => x !== key), key, `${key}:settled`] });
+      }
+    }
+    celebrate(kind === 'sent' ? 'Gönderildi!' : 'Hesaplar kapandı!');
+    const me = names[uid] || 'Eşin';
+    api.notify({
+      type: 'settle',
+      title: '💸 Hesaplaşma',
+      body: kind === 'sent' ? `${me}: ${monthName(m)} için ${tl(s.amount)} gönderdim` : `${me}: ${tl(s.amount)} geldi, aldım ✓`,
+    }).catch(() => {});
+  }
+  return ok;
+}
+
 function SettleView({ ctx }) {
   const { rows, members, names, uid, actions } = ctx;
   const [m, setM] = useState(() => defaultSettleMonth(rows));
@@ -710,41 +747,14 @@ function SettleView({ ctx }) {
   const who = id => (id === uid ? 'Sen' : names[id] || 'Eşin');
   const when = t => new Date(t).toLocaleString('tr-TR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 
-  /** Gönderdim / Aldım işaretini koyar ya da kaldırır; her adım log'a yazılır, bütçeye dokunmaz */
+  /** Gönderdim / Aldım işaretini koyar ya da kaldırır */
   async function mark(kind, on) {
     const question = {
       sent: `${who(s.to)} kişisine ${tl(s.amount)} gönderdin mi?`,
       received: `${who(s.from)} kişisinden ${tl(s.amount)} aldın mı?`,
     }[kind];
     if (!confirm(on ? question : 'İşaret kaldırılsın mı?')) return;
-    const now = new Date().toISOString();
-    const entry = { at: now, by: uid, action: on ? kind : `un${kind}`, amount: s.amount };
-    const patch = kind === 'sent'
-      ? { sent_at: on ? now : null, sent_by: on ? uid : null }
-      : { received_at: on ? now : null, received_by: on ? uid : null };
-    const base = { amount: s.amount, from_id: s.from, to_id: s.to };
-    const ok = rec
-      ? await actions.patch('settlements', rec.id, { ...base, ...patch, log: [...(rec.log || []), entry] })
-      : await actions.add('settlements', { month: m, ...base, ...patch, log: [entry] });
-    if (ok !== false && on) {
-      // Hesaplaşmayla borçlu kendi payını ödemiş olur: o ayın kalemlerinde borçluyu "ödedi" olarak işaretle
-      for (const l of s.lines) {
-        const debtor = l.payer === s.A ? s.B : s.A;
-        const it = rows[l.table].find(x => x.id === l.id);
-        const key = paidKey(l.table === 'expenses' && it?.date ? mk(it.date) : m, debtor);
-        const p = it?.paid_months || [];
-        if (it && !p.includes(`${key}:settled`)) {
-          await actions.patch(l.table, l.id, { paid_months: [...p.filter(x => x !== key), key, `${key}:settled`] });
-        }
-      }
-      celebrate(kind === 'sent' ? 'Gönderildi!' : 'Hesaplar kapandı!');
-      const me = names[uid] || 'Eşin';
-      api.notify({
-        type: 'settle',
-        title: '💸 Hesaplaşma',
-        body: kind === 'sent' ? `${me}: ${monthName(m)} için ${tl(s.amount)} gönderdim` : `${me}: ${tl(s.amount)} geldi, aldım ✓`,
-      }).catch(() => {});
-    }
+    await settleMark(ctx, m, kind, on);
   }
 
   const status = (label, at, by) => html`
@@ -2094,65 +2104,103 @@ const fabPrefs = () => {
 const localDay = t => new Date(t).toLocaleDateString('sv-SE');
 const whenShort = t => new Date(t).toLocaleString('tr-TR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 
-/** Bankadan gelen harcamanın eşleşebileceği, benim ödediğim kayıtlar: tutarı en yakın olan üstte */
-function matchCandidates(rows, uid, ev) {
+/** Banka hareketinin eşleşebileceği kayıtlar: tutarı en yakın olan üstte.
+ *  Kart: benim kart/harcama kayıtlarım. Giden para: nakit kayıtlarım + göndereceğim hesaplaşma. Gelen para: alacağım hesaplaşma. */
+function matchCandidates(ctx, ev) {
+  const { rows, uid, members } = ctx;
   const day = localDay(ev.occurred_at);
   const m = mk(day);
   const from = localDay(Date.parse(day) - 40 * 86400000);
   const to = localDay(Date.parse(day) + 10 * 86400000);
   const used = new Set((rows.bank_events || []).filter(e => e.status === 'matched' && e.id !== ev.id && (e.matched_table === 'expenses' || mk(localDay(e.occurred_at)) === m)).map(e => e.matched_id));
+  // Ekim 2026 öncesi aylar takip edilmedi; onların hesaplaşması önerilmez
+  const settles = [addM(m, -1), m, addM(m, 1)].filter(month => month >= '2026-10').map(month => {
+    const st = settlementFor(rows, members, month);
+    const rec = rows.settlements.find(x => x.month === month);
+    const mine = ev.kind === 'out' ? st?.from === uid && !rec?.sent_at : st?.to === uid && !rec?.received_at;
+    return st && st.amount >= 1 && mine
+      ? { it: { id: `s-${month}`, name: `Hesaplaşma · ${monthName(month)}` }, table: 'settlements', month, kind: ev.kind === 'out' ? 'Gönderilecek hesaplaşma' : 'Gelecek hesaplaşma', amount: st.amount, sub: `ödeme günü 5 ${AYLAR[Number(month.slice(5, 7)) - 1]}` }
+      : null;
+  }).filter(Boolean);
+  if (ev.kind === 'in') return settles;
+  const cash = ev.kind === 'out';
   const list = [
-    ...rows.expenses.filter(e => e.payer_id === uid && Number(e.amount) > 0 && e.date >= from && e.date <= to)
+    ...rows.expenses.filter(e => e.payer_id === uid && Number(e.amount) > 0 && e.date >= from && e.date <= to
+      && (cash ? !e.on_card && !isPaid(e, mk(e.date), uid) : true))
       .map(it => ({ it, table: 'expenses', kind: 'Harcama', amount: Number(it.amount), sub: fmtDate(it.date) })),
-    ...rows.fixed_payments.filter(f => f.payer_id === uid)
+    ...rows.fixed_payments.filter(f => f.payer_id === uid && (cash ? !onCardItem(f, 'fixed_payments') && !isPaid(f, m, uid) : true))
       .map(it => ({ it, table: 'fixed_payments', kind: 'Her ay', amount: Number(it.amount), sub: monthName(m) })),
-    ...rows.installments.filter(i => i.payer_id === uid && inst.active(i, m))
+    ...rows.installments.filter(i => i.payer_id === uid && inst.active(i, m) && (cash ? !onCardItem(i) && !isPaid(i, m, uid) : true))
       .map(it => ({ it, table: 'installments', kind: 'Taksit', amount: Number(it.monthly_amount), sub: `${inst.remaining(it, m)} taksit kaldı` })),
   ].filter(c => !used.has(c.it.id));
-  return list.sort((a, b) => Math.abs(a.amount - ev.amount) - Math.abs(b.amount - ev.amount)).slice(0, 15);
+  return [...(cash ? settles : []), ...list].sort((a, b) => Math.abs(a.amount - ev.amount) - Math.abs(b.amount - ev.amount)).slice(0, 15);
 }
 
-/** Uygulama açılınca: bankadan gelen ve henüz işlenmemiş kart harcamaları */
+const BANK_KIND = { card: '💳 Kart harcaması', out: '↗️ Giden para', in: '↙️ Gelen para' };
+
+/** Uygulama açılınca: bankadan gelen ve henüz işlenmemiş hareketler (kart harcaması, giden/gelen para) */
 function BankInboxSheet({ ctx, events, onNew, onClose }) {
-  const { rows, uid, actions } = ctx;
+  const { fin, actions } = ctx;
   const [open, setOpen] = useState(null);
   const done = (ev, p) => actions.patch('bank_events', ev.id, p);
 
   async function match(ev, c) {
+    const day = localDay(ev.occurred_at);
+    if (c.table === 'settlements') {
+      const kind = ev.kind === 'out' ? 'sent' : 'received';
+      if (!confirm(`${c.it.name} ${kind === 'sent' ? '"Gönderildi"' : '"Alındı"'} olarak işaretlensin mi?${Math.abs(c.amount - ev.amount) >= 1 ? `\n\nHesaplaşma ${tl(c.amount)}, bankadaki tutar ${tl(ev.amount)}.` : ''}`)) return;
+      if (await settleMark(ctx, c.month, kind, true) === false) return;
+      await done(ev, { status: 'matched', matched_table: 'settlements' });
+      setOpen(null);
+      return;
+    }
+    const p = {};
     if (c.table === 'expenses') {
-      const day = localDay(ev.occurred_at);
-      const p = { on_card: true, date: day };
       if (Math.abs(c.amount - ev.amount) >= 0.01
         && confirm(`Tutar ${tl(c.amount)} yerine bankadaki ${tl(ev.amount)} olarak güncellensin mi?`)) p.amount = ev.amount;
+      p.date = day;
       if (c.it.pay_date) p.pay_date = c.it.pay_date === c.it.date ? day : settleDay(day);
-      await actions.patch('expenses', c.it.id, p);
     }
+    if (ev.kind === 'card') {
+      if (c.table === 'expenses') p.on_card = true;
+    } else {
+      // Nakit ödeme yapıldı: kaydı "ödendi" işaretle
+      const key = paidKey(mk(day), ctx.uid);
+      const pm = c.it.paid_months || [];
+      if (!pm.includes(key)) p.paid_months = [...pm, key];
+    }
+    if (Object.keys(p).length) await actions.patch(c.table, c.it.id, p);
     await done(ev, { status: 'matched', matched_table: c.table, matched_id: c.it.id });
     setOpen(null);
     celebrate('Eşleştirildi!');
   }
 
   return html`
-    <${Sheet} title="🔔 Yeni harcama belirlendi" onClose=${onClose}
+    <${Sheet} title="🔔 Bankada yeni hareket" onClose=${onClose}
       right=${html`<button class="link" onClick=${onClose}>Sonra</button>`}>
-      <p class="hint">Bankandan gelen kart harcamaları. Önceden girdiğin bir harcamaysa eşleştir, değilse yeni harcama olarak ekle.</p>
-      ${events.map(ev => html`
+      ${fin.bank_balance != null && html`<div class="card row pad"><span>Güncel bakiye<small class="muted"> · ${whenShort(fin.bank_balance_at)}</small></span><b>${tl(fin.bank_balance)}</b></div>`}
+      <p class="hint">Önceden girdiğin bir kayıtsa eşleştir; değilse ekle ya da bütçeyi etkilemiyorsa yok say.</p>
+      ${events.map(ev => {
+        const cands = open === ev.id ? matchCandidates(ctx, ev) : [];
+        return html`
         <div class="card" key=${ev.id}>
-          <div class="row pad"><span><b>${ev.merchant || 'Kart harcaması'}</b><small class="muted"> · ${whenShort(ev.occurred_at)}</small></span><b class="neg">${tl(ev.amount)}</b></div>
+          <div class="row pad"><span><b>${ev.merchant || BANK_KIND[ev.kind]}</b><small class="muted"> · ${BANK_KIND[ev.kind]} · ${whenShort(ev.occurred_at)}</small></span>
+            <b class=${ev.kind === 'in' ? 'pos' : 'neg'} style="white-space: nowrap">${ev.kind === 'in' ? '+' : '−'} ${tl(ev.amount)}</b></div>
           <div class="row pad bank-actions">
-            <button class="pill on" onClick=${() => setOpen(open === ev.id ? null : ev.id)}>🔗 Eşleştir</button>
-            <button class="pill" onClick=${() => onNew(ev)}>+ Yeni harcama</button>
-            <button class="pill" onClick=${() => done(ev, { status: 'ignored' })}>Yok say</button>
+            <button class="pill on" onClick=${() => setOpen(open === ev.id ? null : ev.id)}>🔗 ${ev.kind === 'in' ? 'Hesaplaşma geldi' : 'Eşleştir'}</button>
+            ${ev.kind !== 'in' && html`<button class="pill" onClick=${() => onNew(ev)}>+ ${ev.kind === 'card' ? 'Yeni harcama' : 'Harcama olarak ekle'}</button>`}
+            <button class="pill" onClick=${() => done(ev, { status: 'ignored' })}>${ev.kind === 'card' ? 'Yok say' : ev.kind === 'out' ? 'Kendi hesabıma · yok say' : 'Kendi hesabımdan · yok say'}</button>
           </div>
           ${open === ev.id && html`<div class="detail-inline">
-            <div class="row pad"><small class="muted">Hangi kaydınla aynı? Tutarı en yakın olanlar üstte.</small></div>
-            ${matchCandidates(rows, uid, ev).map(c => html`
+            <div class="row pad"><small class="muted">${ev.kind === 'in' ? 'Hangi hesaplaşmanın parası geldi?' : 'Hangi kaydınla aynı? Tutarı en yakın olanlar üstte.'}</small></div>
+            ${cands.map(c => html`
               <button class="item" key=${c.table + c.it.id} onClick=${() => match(ev, c)}>
                 <span class="grow"><span class="title">${c.it.name}</span><span class="sub">${c.kind} · ${c.sub}${c.it.on_card ? ' · kart' : ''}</span></span>
                 <span class="amt">${tl(c.amount)}</span></button>`)}
-            ${!matchCandidates(rows, uid, ev).length && html`<${Empty}>Eşleşecek kayıt yok, yeni harcama olarak ekle<//>`}
+            ${!cands.length && html`<${Empty}>${ev.kind === 'in' ? 'Bekleyen bir hesaplaşma yok; kendi hesabından geldiyse yok say' : ev.kind === 'out' ? 'Eşleşecek kayıt yok; harcama olarak ekle ya da yok say' : 'Eşleşecek kayıt yok, yeni harcama olarak ekle'}<//>`}
           </div>`}
-        </div>`)}
+        </div>`;
+      })}
     <//>`;
 }
 
@@ -2405,7 +2453,7 @@ function App() {
       setMembers(ms => ms.map(m => (m.user_id === user.id ? { ...m, notify_prefs: prefs } : m)));
       await guard(() => api.saveNotifyPrefs(user.id, prefs));
     } };
-  const bankPending = (rows.bank_events || []).filter(e => e.kind === 'card' && e.status === 'pending' && e.owner_id === user.id)
+  const bankPending = (rows.bank_events || []).filter(e => ['card', 'out', 'in'].includes(e.kind) && e.status === 'pending' && e.owner_id === user.id)
     .sort((a, b) => (a.occurred_at < b.occurred_at ? -1 : 1));
   const Screen = { month: MonthScreen, shop: ListsScreen, ozet: OzetScreen, settle: SettleScreen, money: BenScreen }[tab] || MonthScreen;
 
@@ -2424,7 +2472,7 @@ function App() {
     ${!askCard && !askCarry && bankOpen && !bankNew && !SHOW && bankPending.length > 0 && html`
       <${BankInboxSheet} ctx=${ctx} events=${bankPending} onNew=${ev => setBankNew(ev)} onClose=${() => setBankOpen(false)} />`}
     ${bankNew && html`<${ItemForm} ctx=${ctx} kind="expense" month=${mk(localDay(bankNew.occurred_at))}
-      preset=${{ name: bankNew.merchant || 'Kart harcaması', amount: bankNew.amount, date: localDay(bankNew.occurred_at), on_card: true }}
+      preset=${{ name: bankNew.merchant || (bankNew.kind === 'card' ? 'Kart harcaması' : 'Giden para'), amount: bankNew.amount, date: localDay(bankNew.occurred_at), on_card: bankNew.kind === 'card' }}
       onSaved=${() => actions.patch('bank_events', bankNew.id, { status: 'added' })} onClose=${() => setBankNew(null)} />`}
     <${QuickAdd} onTap=${() => setQuick(true)} />
     ${quick && html`<${ItemForm} ctx=${ctx} kind="expense" month=${thisMonth()} onClose=${() => setQuick(false)} />`}
