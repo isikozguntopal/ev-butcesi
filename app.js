@@ -1141,17 +1141,66 @@ function ShoppingScreen({ ctx, embedded, personal }) {
     ${!personal && html`<div class="group">
       <div class="group-head"><span>Geçmiş alışverişler</span></div>
       <div class="card">
-        ${trips.map(t => html`<div key=${t.id}>
-          <button class="item" onClick=${() => setOpenTrip(openTrip === t.id ? null : t.id)}>
-            <span class="grow"><span class="title">${fmtDate(t.date)} · ${who(t.owner_id)}</span><span class="sub">${(t.items || []).length} ürün</span></span>
-            <span class="amt">${tl(t.total)}</span></button>
-          ${openTrip === t.id && html`<div class="detail-inline">${(t.items || []).map((n, k) => html`<div class="row pad" key=${k}><span>${n}</span></div>`)}</div>`}
-        </div>`)}
+        ${trips.map(t => html`
+          <button class="item" key=${t.id} onClick=${() => setOpenTrip(t)}>
+            <span class="grow"><span class="title">${fmtDate(t.date)} · ${who(t.owner_id)}</span><span class="sub">${(t.items || []).length} ürün${(t.items || []).length ? ` · ${(t.items || []).slice(0, 3).join(', ')}${(t.items || []).length > 3 ? '…' : ''}` : ''}</span></span>
+            <span class="amt">${tl(t.total)}</span><span class="chev-r">›</span></button>`)}
         ${!trips.length && html`<${Empty}>Henüz kayıtlı alışveriş yok<//>`}
       </div>
     </div>`}
     ${tripOpen && html`<${TripSheet} ctx=${ctx} checked=${checked} onClose=${() => setTripOpen(false)} />`}
+    ${openTrip && html`<${TripEditSheet} ctx=${ctx} trip=${openTrip} onClose=${() => setOpenTrip(null)} />`}
   </div>`;
+}
+
+/** Geçmiş alışverişi düzenle: tarih, tutar, ürünler; sil. Bağlı ortak market harcaması varsa onu da günceller. */
+function TripEditSheet({ ctx, trip, onClose }) {
+  const { rows, actions } = ctx;
+  const [date, setDate] = useState(String(trip.date).slice(0, 10));
+  const [total, setTotal] = useState(Number(trip.total) || 0);
+  const [items, setItems] = useState(trip.items || []);
+  const [newItem, setNewItem] = useState('');
+  const [busy, setBusy] = useState(false);
+  // Alışveriş tamamlanırken "ortak harcama" olarak eklenen kayıt: aynı gün, aynı tutar, "Market alışverişi" adıyla
+  const linked = rows.expenses.find(e => e.date === trip.date && String(e.name).startsWith('Market alışverişi') && Number(e.amount) === Number(trip.total));
+  const addItem = () => { const n = newItem.trim(); if (n) { setItems([...items, n]); setNewItem(''); } };
+
+  async function save() {
+    if (busy || !(total > 0)) return;
+    setBusy(true);
+    const ok = await actions.patch('shopping_trips', trip.id, { date, total, items });
+    if (ok !== false && linked && (Number(linked.amount) !== total || linked.date !== date || items.length !== (trip.items || []).length)
+      && confirm(`Bu alışverişin "${linked.name}" harcaması da güncellensin mi?\n\n${tl(linked.amount)} → ${tl(total)}`)) {
+      await actions.patch('expenses', linked.id, {
+        amount: total, date, name: `Market alışverişi (${items.length} ürün)`,
+        ...(linked.pay_date ? { pay_date: linked.pay_date === linked.date ? date : settleDay(date, cutDayOf(ctx.members, linked.payer_id)) } : {}),
+      });
+    }
+    setBusy(false);
+    if (ok !== false) onClose();
+  }
+  async function remove() {
+    if (!confirm('Bu alışveriş geçmişten silinsin mi?' + (linked ? `\n\nBağlı "${linked.name}" harcaması silinmez; gerekirse Kayıtlar'dan sil.` : ''))) return;
+    await actions.del('shopping_trips', trip.id);
+    onClose();
+  }
+
+  return html`
+    <${Sheet} title="🧾 Alışverişi düzenle" onClose=${onClose}
+      right=${html`<button class="link strong" disabled=${busy || !(total > 0)} onClick=${save}>Kaydet</button>`}>
+      <div class="card form">
+        <label class="field"><span>Tarih</span><input type="date" value=${date} onInput=${e => setDate(e.target.value || date)} onChange=${e => setDate(e.target.value || date)} /></label>
+        <label class="field"><span>Ödenen toplam</span><${MoneyInput} value=${total} onInput=${setTotal} /></label>
+      </div>
+      ${linked && html`<p class="hint">Bağlı harcama: ${linked.name} · ${tl(linked.amount)}. Kaydedince istersen o da güncellenir.</p>`}
+      <${Group} title=${`Ürünler (${items.length})`}>
+        ${items.map((n, k) => html`<${SwipeRow} key=${n + k} onDelete=${() => setItems(items.filter((_, j) => j !== k))}>
+          <div class="row pad"><span>${n}</span><button class="link small" onClick=${() => setItems(items.filter((_, j) => j !== k))}>Çıkar</button></div><//>`)}
+        <div class="row pad"><input placeholder="Ürün ekle" value=${newItem} onInput=${e => setNewItem(e.target.value)} onKeyDown=${e => e.key === 'Enter' && addItem()} />
+          <button class="pill on" onClick=${addItem}>Ekle</button></div>
+      <//>
+      <button class="danger" onClick=${remove}>Alışverişi sil</button>
+    <//>`;
 }
 
 /** Alışverişi tamamla: toplam tutar, geçmişe kayıt; istenirse ortak harcama olarak yarı yarıya */
