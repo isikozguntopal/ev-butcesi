@@ -70,7 +70,14 @@ async function daily(admin: Admin) {
   const ids: string[] = (members ?? [])
     .filter((m: { user_id: string; notify_prefs?: Record<string, boolean> }) => (m.notify_prefs ?? {}).daily !== false && !done.has(m.user_id))
     .map((m: { user_id: string }) => m.user_id);
-  return { today, sent: await sendTo(admin, ids, '🧾 Bugünkü harcamalar', 'Bugün bir harcama girdin mi? Girmeyi unutma 🐶') };
+  let sent = await sendTo(admin, ids, '🧾 Bugünkü harcamalar', 'Bugün bir harcama girdin mi? Girmeyi unutma 🐶');
+  // Kart hesap kesim günü: ekstreyi indirip kontrol ettirme hatırlatması (Ayarlar > Kredi kartı)
+  const day = tr.getUTCDate();
+  const cut: string[] = (members ?? [])
+    .filter((m: { notify_prefs?: Record<string, unknown> }) => Number((m.notify_prefs ?? {}).cut_day) === day && (m.notify_prefs ?? {}).statement !== false)
+    .map((m: { user_id: string }) => m.user_id);
+  sent += await sendTo(admin, cut, '🧾 Kart ekstren kesildi', 'Ekstre PDF\'ini indir ve kontrol için gönder; ödemeyi yapınca kart ödemesini gir 💳');
+  return { today, sent };
 }
 
 Deno.serve(async req => {

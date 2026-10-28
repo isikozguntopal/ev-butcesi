@@ -36,7 +36,13 @@ export function parseBankText(text: string): Parsed[] {
   const first = [...head.matchAll(AMOUNT)][0];
 
   let kind: Parsed['kind'] | null = null;
-  if (/kart/.test(t) && /(harcama|alisveris|islem|provizyon)/.test(t) && !/iade/.test(t)) kind = 'card';
+  // Kredi kartı borç ödemesi: giden para olarak gelir, uygulamada "Kart ödemesi" diye sorulur
+  const isCard = /(kart|card)/.test(t);
+  const cardPay = isCard && !/(harcama|alisveris|provizyon)/.test(t)
+    && /(borc\w*|ekstre\w*)?\s*(odeme yapilmistir|odeme yapildi|odemeniz alinmistir|odeme alinmistir|odenmistir|tahsil edilmistir|odemesi)/.test(t)
+    && !/(gelmistir|gonderilmistir|hesabiniza|hesabinizdan)/.test(t);
+  if (cardPay) kind = 'out';
+  else if (isCard && /(harcama|alisveris|islem|provizyon)/.test(t) && !/iade/.test(t)) kind = 'card';
   else if (/(gelmistir|gelen (eft|havale|fast)|hesabiniza|para girisi|yatirilmistir)/.test(t)) kind = 'in';
   else if (/(gonderilmistir|giden (eft|havale|fast)|hesabinizdan|para cikisi|cekilmistir)/.test(t)) kind = 'out';
 
@@ -46,13 +52,18 @@ export function parseBankText(text: string): Parsed[] {
       const m1 = t.match(/(?:tl|try)\s+(?:tutarinda(?:ki)?\s+)?(.{2,40}?)\s+(?:isyerinden|isyerinde|uye isyeri)/);
       const m2 = t.match(/(?:isyeri|is yeri|uye isyeri)\s*:\s*([^,;|]{2,40})/);
       const m3 = t.match(/(?:tarihinde|saatinde)\s+(.{2,40}?)\s+(?:isyerinden|isyerinde|'?(?:den|dan|de|da)\s)/);
-      const m = m1 ?? m3 ?? m2;
-      if (m) merchant = clean(raw.substr(m.index! + m[0].indexOf(m[1]), m[1].length));
+      // "14:05'te MIGROS KADIKOY'dan 245,90 TL" / "14:05 MIGROS KADIKOY 245,90 TL"
+      const m4 = t.match(/\d{2}:\d{2}(?::\d{2})?(?:'?(?:te|ta|de|da))?\s+(.{2,40}?)(?:'?(?:dan|den|tan|ten))?\s+-?\d{1,3}(?:\.\d{3})*,\d{2}\s*(?:tl|try)/);
+      const m = m1 ?? m3 ?? m4 ?? m2;
+      if (m) merchant = (clean(raw.substr(m.index! + m[0].indexOf(m[1]), m[1].length)) ?? '')
+        // "0899 ile biten kartınızdan TRENDYOL" → "TRENDYOL"
+        .replace(/^.*?\b(?:kart|card)\S*\s+(?:ile\s+)?/i, '') || null;
     } else {
       const who = t.match(/,\s*(.{2,60}?)\s+tarafindan/) ?? t.match(/(?:hesabinizdan|,)\s*(.{2,60}?)\s+adina/)
         ?? t.match(/(?:alici|gonderen)\s*:?\s*([^,;|]{2,40})/);
       if (who) merchant = clean(raw.substr(who.index! + who[0].indexOf(who[1]), who[1].length));
     }
+    if (cardPay) merchant = 'Kredi kartı ödemesi';
     out.push({ kind, amount: num(first[1]), merchant, occurred_at: when });
   }
   if (bal) out.push({ kind: 'balance', amount: num(bal[1]), merchant: null, occurred_at: when });
