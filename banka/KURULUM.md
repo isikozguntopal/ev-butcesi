@@ -14,12 +14,12 @@ Bilgisayarda gmail.com > arama kutusundaki ayar simgesi:
 - Filtre oluştur > Gelen Kutusunu atla, Etiketi uygula: `Yapı Kredi`, eşleşen ileti dizilerine de uygula.
 
 ## 3. Anahtar
-Uygulamada Ben > Ayarlar > Banka bağlantısı > **Anahtar oluştur**. ADRES ve ANAHTAR'ı buradan kopyalayacaksın.
+Uygulamada Ben > Ayarlar > Banka bağlantısı > **Anahtar oluştur**, sonra **Betik ayarlarını kopyala**.
 
 ## 4. Betik
 1. Bilgisayarda script.google.com > **Yeni proje**.
 2. Açılan dosyanın içini sil, `gmail-betigi.js` dosyasının tamamını yapıştır.
-3. `BURAYA_ADRES` ve `BURAYA_ANAHTAR` yerine uygulamadan kopyaladıklarını yapıştır (tırnaklar kalsın).
+3. `const ADRES`, `const ACIK_ANAHTAR` ve `const ANAHTAR` ile başlayan 3 satırı seçip uygulamadan kopyaladığını yapıştır.
 4. Kaydet (disk simgesi). Proje adı: "Aile Bütçesi Banka".
 5. Üstteki fonksiyon menüsünden **dene**'yi seç > **Çalıştır**. İlk seferde Google izin ister:
    İzinleri incele > hesabını seç > "Gelişmiş" > "…(güvenli değil) sayfasına git" > İzin ver.

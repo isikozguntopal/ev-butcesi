@@ -1,9 +1,10 @@
 // Gmail → Aile Bütçesi: "Yapı Kredi" etiketli e-postalardan kart harcamasını ve bakiyeyi okur, uygulamaya gönderir.
 // Kurulum: script.google.com > Yeni proje > bu dosyanın tamamını yapıştır.
-// ADRES ve ANAHTAR'ı uygulamadaki Ben > Ayarlar > Banka bağlantısı bölümünden kopyala.
+// Aşağıdaki 3 ayar satırını uygulamadaki Ben > Ayarlar > Banka bağlantısı > "Betik ayarlarını kopyala" ile değiştir.
 // Sonra üstten "kur" fonksiyonunu seçip Çalıştır de (bir kez izin ister). Her 5 dakikada bir kendiliğinden çalışır.
 
 const ADRES = 'BURAYA_ADRES';
+const ACIK_ANAHTAR = 'BURAYA_ACIK_ANAHTAR';
 const ANAHTAR = 'BURAYA_ANAHTAR';
 const ETIKET = 'Yapı Kredi';
 const GUN = 3; // Son kaç günün e-postalarına bakılsın
@@ -23,6 +24,7 @@ function calistir() {
   if (!events.length) return;
   const res = UrlFetchApp.fetch(ADRES, {
     method: 'post', contentType: 'application/json', muteHttpExceptions: true,
+    headers: { Authorization: `Bearer ${ACIK_ANAHTAR}`, apikey: ACIK_ANAHTAR },
     payload: JSON.stringify({ token: ANAHTAR, events }),
   });
   if (res.getResponseCode() !== 200) throw new Error(`Gönderilemedi (${res.getResponseCode()}): ${res.getContentText()}`);

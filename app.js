@@ -2,7 +2,7 @@ import { html, render, useState, useEffect, useRef } from 'https://unpkg.com/htm
 import { api, DEMO, SHOW, TABLES, enterShowMode, exitShowMode, loadSample } from './data.js';
 import { DEFAULT_SHOPPING, CATEGORIES } from './defaults.js';
 import { Buddy, Walker, Party, celebrate, dailyFace, faceFor } from './animals.js';
-import { VAPID_PUBLIC_KEY, APP_NAME, SUPABASE_URL } from './config.js';
+import { VAPID_PUBLIC_KEY, APP_NAME, SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 
 // ---------- Yardımcılar ----------
 
@@ -2170,10 +2170,10 @@ function BankLinkSettings({ ctx }) {
         : !link ? html`<div class="row pad"><span>Gmail'deki banka e-postalarını uygulamaya aktarmak için anahtar oluştur</span></div>
             <button class="primary ghost" onClick=${() => ctx.actions.insertRaw('bank_links', {})}>Anahtar oluştur</button>`
         : html`
-          <div class="row pad"><span>ADRES</span><button class="code" onClick=${() => copy('a', address)}>${copied === 'a' ? 'Kopyalandı' : 'Kopyala'}</button></div>
-          <div class="row pad"><span>ANAHTAR<small class="muted"> · kimseyle paylaşma</small></span><button class="code" onClick=${() => copy('k', link.token)}>${copied === 'k' ? 'Kopyalandı' : 'Kopyala'}</button></div>`}
+          <div class="row pad"><span>Gmail betiği ayarları<small class="muted"> · içinde kişisel anahtarın var, kimseyle paylaşma</small></span>
+            <button class="code" onClick=${() => copy('s', [`const ADRES = '${address}';`, `const ACIK_ANAHTAR = '${SUPABASE_ANON_KEY}';`, `const ANAHTAR = '${link.token}';`].join('\n'))}>${copied === 's' ? 'Kopyalandı' : 'Betik ayarlarını kopyala'}</button></div>`}
     <//>
-    ${address && link && html`<p class="hint">Gmail betiğindeki ADRES ve ANAHTAR satırlarına bunları yapıştır. Bankadan gelen kart harcamaları uygulamayı açınca "Yeni harcama belirlendi" olarak sorulur, günlük bakiye Bu Ay ekranında görünür.</p>`}`;
+    ${address && link && html`<p class="hint">Gmail betiğindeki const ADRES, const ACIK_ANAHTAR ve const ANAHTAR satırlarını bununla değiştir. Bankadan gelen kart harcamaları uygulamayı açınca "Yeni harcama belirlendi" olarak sorulur, günlük bakiye Bu Ay ekranında görünür.</p>`}`;
 }
 
 function QuickAdd({ onTap }) {
