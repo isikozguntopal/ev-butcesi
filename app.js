@@ -2,7 +2,7 @@ import { html, render, useState, useEffect, useRef } from 'https://unpkg.com/htm
 import { api, DEMO, SHOW, TABLES, enterShowMode, exitShowMode, loadSample } from './data.js';
 import { DEFAULT_SHOPPING, CATEGORIES } from './defaults.js';
 import { Buddy, Walker, Party, celebrate, dailyFace, faceFor } from './animals.js';
-import { VAPID_PUBLIC_KEY, APP_NAME } from './config.js';
+import { VAPID_PUBLIC_KEY, APP_NAME, SUPABASE_URL } from './config.js';
 
 // ---------- Yardımcılar ----------
 
@@ -463,6 +463,9 @@ function MonthScreen({ ctx }) {
   const carryAmt = carry ? Number(carry.amount) || 0 : 0;
   const b = nakitBreakdown(rows, uid, m, income, ctx.members);
   const left = b.left;
+  // Bankanın e-postayla bildirdiği son bakiye (sadece bu ay ekranında); fark = banka − uygulamaya göre şu an olması gereken
+  const bank = m === thisMonth() && fin.bank_balance != null ? Number(fin.bank_balance) : null;
+  const bankDiff = bank != null ? Math.round((bank - (b.left + b.unpaid)) * 100) / 100 : 0;
 
   const toggle = (table, it) => {
     const p = it.paid_months || [];
@@ -530,6 +533,10 @@ function MonthScreen({ ctx }) {
           <div class="row"><span>Gelir</span><b>${tl(income)}</b></div>
           ${carryAmt !== 0 && html`<div class="row"><span>Önceki aydan devir</span><b>${tl(carryAmt)}</b></div>`}
           <${BalanceFlow} ctx=${ctx} m=${m} income=${income} />
+          ${bank != null && html`
+            <div class="row"><span>Bankadaki bakiye<small class="muted"> · ${whenShort(fin.bank_balance_at)}</small></span><b>${tl(bank)}</b></div>
+            ${Math.abs(bankDiff) >= 1 && html`<div class="row"><span>Uygulamayla fark</span>
+              <span class="flow-right"><b class=${bankDiff < 0 ? 'neg' : 'pos'}>${signed(bankDiff).text}</b><button class="flow-btn" aria-label="Bakiyeyi eşitle" onClick=${() => setBalOpen(true)}>›</button></span></div>`}`}
         </div>
       </div>
           <${CategoryGroups} ctx=${ctx} m=${m} side="nakit" onToggle=${toggle} onOpen=${x => setDetail(x)} />
@@ -553,16 +560,16 @@ function MonthScreen({ ctx }) {
     ${limitOpen && html`<${CardLimitSheet} ctx=${ctx} onClose=${() => setLimitOpen(false)} />`}
     ${detail && html`<${RecordDetail} ctx=${ctx} m=${m} rec=${detail} onClose=${() => setDetail(null)} onEdit=${() => { setForm({ kind: detail.kind, item: detail.it }); setDetail(null); }} />`}
     ${taksitOpen && html`<${TaksitSheet} ctx=${ctx} onAdd=${() => setForm({ kind: 'installment' })} onClose=${() => setTaksitOpen(false)} />`}
-    ${balOpen && html`<${BalanceSheet} ctx=${ctx} expected=${b.left + b.unpaid} onClose=${() => setBalOpen(false)} />`}`;
+    ${balOpen && html`<${BalanceSheet} ctx=${ctx} expected=${b.left + b.unpaid} initial=${bank ?? undefined} onClose=${() => setBalOpen(false)} />`}`;
 }
 
 // ---------- Bakiye eşitleme ----------
 
 /** Bankadaki gerçek bakiyeyi girince farkı tek bir "Diğer" harcamasıyla kapatır */
-function BalanceSheet({ ctx, expected, onClose }) {
+function BalanceSheet({ ctx, expected, initial, onClose }) {
   const { uid, actions } = ctx;
-  const [real, setReal] = useState(0);
-  const [touched, setTouched] = useState(false);
+  const [real, setReal] = useState(initial ?? 0);
+  const [touched, setTouched] = useState(initial != null);
   const [busy, setBusy] = useState(false);
   const diff = Math.round((expected - real) * 100) / 100;
 
@@ -1330,6 +1337,7 @@ const NOTIFY_TYPES = [
   ['card', 'Kart ödemesi hatırlatması', "Ayın 1'i ve 3'ü, kart ödemeni girmediysen"],
   ['payday', 'Hesaplaşma günü', "Her ayın 5'i, 09:00"],
   ['daily', '22:00 hatırlatması', 'Bugün harcama girmediysen her akşam'],
+  ['bank', 'Bankadan yeni kart harcaması', 'Banka e-postasından harcama gelince'],
 ];
 
 function SettingsView({ ctx }) {
@@ -1366,6 +1374,7 @@ function SettingsView({ ctx }) {
         <input type="checkbox" checked=${fab.locked} onChange=${e => setFab('tf-fab-lock', e.target.checked ? '1' : '0')} /></label>
     <//>
     <${PushSettings} />
+    <${BankLinkSettings} ctx=${ctx} />
     <${Group} title="Hangi bildirimler gelsin?">
       ${NOTIFY_TYPES.map(([k, title, sub]) => html`
         <label class="field toggle" key=${k}>
@@ -2080,6 +2089,93 @@ const fabPrefs = () => {
   catch { return { locked: false }; }
 };
 
+// ---------- Banka e-postalarından gelen harcamalar ----------
+
+const localDay = t => new Date(t).toLocaleDateString('sv-SE');
+const whenShort = t => new Date(t).toLocaleString('tr-TR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+
+/** Bankadan gelen harcamanın eşleşebileceği, benim ödediğim kayıtlar: tutarı en yakın olan üstte */
+function matchCandidates(rows, uid, ev) {
+  const day = localDay(ev.occurred_at);
+  const m = mk(day);
+  const from = localDay(Date.parse(day) - 40 * 86400000);
+  const to = localDay(Date.parse(day) + 10 * 86400000);
+  const used = new Set((rows.bank_events || []).filter(e => e.status === 'matched' && e.id !== ev.id && (e.matched_table === 'expenses' || mk(localDay(e.occurred_at)) === m)).map(e => e.matched_id));
+  const list = [
+    ...rows.expenses.filter(e => e.payer_id === uid && Number(e.amount) > 0 && e.date >= from && e.date <= to)
+      .map(it => ({ it, table: 'expenses', kind: 'Harcama', amount: Number(it.amount), sub: fmtDate(it.date) })),
+    ...rows.fixed_payments.filter(f => f.payer_id === uid)
+      .map(it => ({ it, table: 'fixed_payments', kind: 'Her ay', amount: Number(it.amount), sub: monthName(m) })),
+    ...rows.installments.filter(i => i.payer_id === uid && inst.active(i, m))
+      .map(it => ({ it, table: 'installments', kind: 'Taksit', amount: Number(it.monthly_amount), sub: `${inst.remaining(it, m)} taksit kaldı` })),
+  ].filter(c => !used.has(c.it.id));
+  return list.sort((a, b) => Math.abs(a.amount - ev.amount) - Math.abs(b.amount - ev.amount)).slice(0, 15);
+}
+
+/** Uygulama açılınca: bankadan gelen ve henüz işlenmemiş kart harcamaları */
+function BankInboxSheet({ ctx, events, onNew, onClose }) {
+  const { rows, uid, actions } = ctx;
+  const [open, setOpen] = useState(null);
+  const done = (ev, p) => actions.patch('bank_events', ev.id, p);
+
+  async function match(ev, c) {
+    if (c.table === 'expenses') {
+      const day = localDay(ev.occurred_at);
+      const p = { on_card: true, date: day };
+      if (Math.abs(c.amount - ev.amount) >= 0.01
+        && confirm(`Tutar ${tl(c.amount)} yerine bankadaki ${tl(ev.amount)} olarak güncellensin mi?`)) p.amount = ev.amount;
+      if (c.it.pay_date) p.pay_date = c.it.pay_date === c.it.date ? day : settleDay(day);
+      await actions.patch('expenses', c.it.id, p);
+    }
+    await done(ev, { status: 'matched', matched_table: c.table, matched_id: c.it.id });
+    setOpen(null);
+    celebrate('Eşleştirildi!');
+  }
+
+  return html`
+    <${Sheet} title="🔔 Yeni harcama belirlendi" onClose=${onClose}
+      right=${html`<button class="link" onClick=${onClose}>Sonra</button>`}>
+      <p class="hint">Bankandan gelen kart harcamaları. Önceden girdiğin bir harcamaysa eşleştir, değilse yeni harcama olarak ekle.</p>
+      ${events.map(ev => html`
+        <div class="card" key=${ev.id}>
+          <div class="row pad"><span><b>${ev.merchant || 'Kart harcaması'}</b><small class="muted"> · ${whenShort(ev.occurred_at)}</small></span><b class="neg">${tl(ev.amount)}</b></div>
+          <div class="row pad bank-actions">
+            <button class="pill on" onClick=${() => setOpen(open === ev.id ? null : ev.id)}>🔗 Eşleştir</button>
+            <button class="pill" onClick=${() => onNew(ev)}>+ Yeni harcama</button>
+            <button class="pill" onClick=${() => done(ev, { status: 'ignored' })}>Yok say</button>
+          </div>
+          ${open === ev.id && html`<div class="detail-inline">
+            <div class="row pad"><small class="muted">Hangi kaydınla aynı? Tutarı en yakın olanlar üstte.</small></div>
+            ${matchCandidates(rows, uid, ev).map(c => html`
+              <button class="item" key=${c.table + c.it.id} onClick=${() => match(ev, c)}>
+                <span class="grow"><span class="title">${c.it.name}</span><span class="sub">${c.kind} · ${c.sub}${c.it.on_card ? ' · kart' : ''}</span></span>
+                <span class="amt">${tl(c.amount)}</span></button>`)}
+            ${!matchCandidates(rows, uid, ev).length && html`<${Empty}>Eşleşecek kayıt yok, yeni harcama olarak ekle<//>`}
+          </div>`}
+        </div>`)}
+    <//>`;
+}
+
+/** Ayarlar: Gmail betiği için adres ve kişisel anahtar */
+function BankLinkSettings({ ctx }) {
+  const link = (ctx.rows.bank_links || []).find(l => l.user_id === ctx.uid) || (ctx.rows.bank_links || [])[0];
+  const [copied, setCopied] = useState('');
+  const address = SUPABASE_URL ? `${SUPABASE_URL}/functions/v1/bank` : '';
+  async function copy(k, v) {
+    try { await navigator.clipboard.writeText(v); setCopied(k); setTimeout(() => setCopied(''), 1500); } catch { /* ekranda görünüyor */ }
+  }
+  return html`
+    <${Group} title="Banka bağlantısı">
+      ${!address ? html`<${Empty}>Deneme modunda kullanılamaz<//>`
+        : !link ? html`<div class="row pad"><span>Gmail'deki banka e-postalarını uygulamaya aktarmak için anahtar oluştur</span></div>
+            <button class="primary ghost" onClick=${() => ctx.actions.insertRaw('bank_links', {})}>Anahtar oluştur</button>`
+        : html`
+          <div class="row pad"><span>ADRES</span><button class="code" onClick=${() => copy('a', address)}>${copied === 'a' ? 'Kopyalandı' : 'Kopyala'}</button></div>
+          <div class="row pad"><span>ANAHTAR<small class="muted"> · kimseyle paylaşma</small></span><button class="code" onClick=${() => copy('k', link.token)}>${copied === 'k' ? 'Kopyalandı' : 'Kopyala'}</button></div>`}
+    <//>
+    ${address && link && html`<p class="hint">Gmail betiğindeki ADRES ve ANAHTAR satırlarına bunları yapıştır. Bankadan gelen kart harcamaları uygulamayı açınca "Yeni harcama belirlendi" olarak sorulur, günlük bakiye Bu Ay ekranında görünür.</p>`}`;
+}
+
 function QuickAdd({ onTap }) {
   const [prefs, setPrefs] = useState(fabPrefs);
   const [pos, setPos] = useState(() => { try { return JSON.parse(localStorage.getItem('tf-fab')) || null; } catch { return null; } });
@@ -2140,6 +2236,8 @@ function App() {
   const [askCard, setAskCard] = useState(false);
   const [askCarry, setAskCarry] = useState(null);
   const [quick, setQuick] = useState(false);
+  const [bankOpen, setBankOpen] = useState(true);
+  const [bankNew, setBankNew] = useState(null);
   const [tab, setTab] = useState(() => {
     try {
       const t = localStorage.getItem('tf-tab') || 'month';
@@ -2250,6 +2348,10 @@ function App() {
       setRows(s => ({ ...s, [t]: s[t].map(r => (r.id === id ? { ...r, ...p } : r)) }));
       await api.update(t, id, p);
     }),
+    insertRaw: (t, row) => guard(async () => {
+      const [r] = await api.insert(t, row);
+      setRows(s => ({ ...s, [t]: [...(s[t] || []), r] }));
+    }),
     del: (t, id) => guard(async () => {
       setRows(s => ({ ...s, [t]: s[t].filter(r => r.id !== id) }));
       await api.remove(t, id);
@@ -2282,6 +2384,8 @@ function App() {
       setMembers(ms => ms.map(m => (m.user_id === user.id ? { ...m, notify_prefs: prefs } : m)));
       await guard(() => api.saveNotifyPrefs(user.id, prefs));
     } };
+  const bankPending = (rows.bank_events || []).filter(e => e.kind === 'card' && e.status === 'pending' && e.owner_id === user.id)
+    .sort((a, b) => (a.occurred_at < b.occurred_at ? -1 : 1));
   const Screen = { month: MonthScreen, shop: ListsScreen, ozet: OzetScreen, settle: SettleScreen, money: BenScreen }[tab] || MonthScreen;
 
   return html`
@@ -2296,6 +2400,11 @@ function App() {
     ${exitingShow && html`<${ExitShowSheet} onClose=${() => setExitingShow(false)} />`}
     ${askCard && html`<${CardSheet} ctx=${ctx} month=${thisMonth()} prompt=${true} onClose=${closeCardAsk} />`}
     ${!askCard && askCarry && html`<${CarrySheet} ctx=${ctx} ask=${askCarry} onClose=${() => setAskCarry(null)} />`}
+    ${!askCard && !askCarry && bankOpen && !bankNew && !SHOW && bankPending.length > 0 && html`
+      <${BankInboxSheet} ctx=${ctx} events=${bankPending} onNew=${ev => setBankNew(ev)} onClose=${() => setBankOpen(false)} />`}
+    ${bankNew && html`<${ItemForm} ctx=${ctx} kind="expense" month=${mk(localDay(bankNew.occurred_at))}
+      preset=${{ name: bankNew.merchant || 'Kart harcaması', amount: bankNew.amount, date: localDay(bankNew.occurred_at), on_card: true }}
+      onSaved=${() => actions.patch('bank_events', bankNew.id, { status: 'added' })} onClose=${() => setBankNew(null)} />`}
     <${QuickAdd} onTap=${() => setQuick(true)} />
     ${quick && html`<${ItemForm} ctx=${ctx} kind="expense" month=${thisMonth()} onClose=${() => setQuick(false)} />`}
     <nav class="tabs">

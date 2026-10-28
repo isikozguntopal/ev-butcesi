@@ -14,7 +14,7 @@ const store = {
 export const SHOW = CONFIGURED && store.get(SHOW_FLAG) === '1';
 /** Supabase yoksa ya da gösterim modundaysa veriler sadece bu cihazda, örnek veridir */
 export const DEMO = !CONFIGURED || SHOW;
-export const TABLES = ['installments', 'fixed_payments', 'expenses', 'shopping_items', 'wishlist', 'card_payments', 'settlements', 'goals', 'carryovers', 'shopping_trips'];
+export const TABLES = ['installments', 'fixed_payments', 'expenses', 'shopping_items', 'wishlist', 'card_payments', 'settlements', 'goals', 'carryovers', 'shopping_trips', 'bank_events', 'bank_links'];
 
 // --- Supabase ---
 
