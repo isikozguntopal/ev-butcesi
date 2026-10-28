@@ -1266,9 +1266,17 @@ function ReceiptImage({ path }) {
 
 /** Alışverişi tamamla: toplam tutar, geçmişe kayıt; istenirse ortak harcama olarak yarı yarıya */
 function TripSheet({ ctx, checked, onClose }) {
-  const { uid, actions } = ctx;
+  const { uid, actions, members } = ctx;
   const [total, setTotal] = useState(0);
   const [shared, setShared] = useState(true);
+  const [method, setMethod] = useState('card');
+  const [payPick, setPayPick] = useState(null);
+  const d0 = today();
+  const partnerId = members.find(x => x.user_id !== uid)?.user_id;
+  const cut = cutDayOf(members, uid);
+  const payDay = settleDay(d0, cut);
+  // Eşinin payı: kartla ödendiyse ekstre ödemesinden sonraki hesaplaşmada, nakitse genelde aynı gün
+  const payMode = payPick || (method === 'card' ? 'settle' : 'now');
   const [busy, setBusy] = useState(false);
   const [photo, setPhoto] = useState(null);
   const [preview, setPreview] = useState(null);
@@ -1284,9 +1292,13 @@ function TripSheet({ ctx, checked, onClose }) {
     const ok = await actions.add('shopping_trips', { date: d, total, items: checked.map(i => i.name), ...(receipt_path ? { receipt_path } : {}) });
     if (ok === false) { setBusy(false); return; }
     if (shared) {
+      const k = paidKey(mk(d), partnerId);
       await actions.add('expenses', {
         name: `Market alışverişi (${checked.length} ürün)`, amount: total, date: d, shared: true, split: 'half',
-        payer_id: uid, category: 'Market', paid_months: [paidKey(mk(d), uid)],
+        payer_id: uid, category: 'Market', on_card: method === 'card',
+        // Nakitse benim payım ödendi; kartla ödenen, kart ödemesi girilince tiklenir
+        paid_months: [...(method === 'cash' ? [paidKey(mk(d), uid)] : []), ...(partnerId && payMode === 'now' ? [k, `${k}:sent`] : [])],
+        ...(partnerId ? { pay_date: payMode === 'settle' ? payDay : d } : {}),
       });
     }
     for (const i of checked) await actions.patch('shopping_items', i.id, { in_list: false, checked: false });
@@ -1301,6 +1313,18 @@ function TripSheet({ ctx, checked, onClose }) {
         <label class="field toggle"><span>Ortak harcama olarak kaydet<small>Yarı yarıya ikinizin bütçesine de yansır</small></span>
           <input type="checkbox" checked=${shared} onChange=${e => setShared(e.target.checked)} /></label>
       </div>
+      ${shared && html`
+        <div class="field col method">
+          <span>Nasıl ödedin?</span>
+          <${Seg} value=${method} onChange=${v => { setMethod(v); setPayPick(null); }} options=${[['card', '💳 Kredi kartıyla'], ['cash', '💵 Nakit / havale']]} />
+        </div>
+        ${partnerId && html`<div class="field col">
+          <span>Eşinin payı ne zaman ödenecek?</span>
+          <${Seg} value=${payMode} onChange=${setPayPick} options=${[['settle', `Hesaplaşmada · ${fmtDate(payDay)}`], ['now', 'Harcama günü']]} />
+          <small class="muted">${payMode === 'settle'
+            ? `Ödeme tarihi ${fmtDate(payDay)}: ${monthName(mk(payDay))} hesaplaşmasına girer.${cut ? ` Kartının hesap kesim günü ${cut}.` : ' Kartının hesap kesim günü girilmemiş (Ben > Ayarlar > Kredi kartı).'}`
+            : 'Eşin payını aynı gün gönderir; hesaplaşmaya girmez.'}</small>
+        </div>`}`}
       ${preview ? html`<img class="receipt-thumb" src=${preview} alt="Fiş" />` : ''}
       <${PhotoButton} label=${photo ? '📷 Fişi değiştir' : '📷 Fiş fotoğrafı ekle'} onPick=${pick} />
       <div class="card rows">${checked.map(i => html`<div class="row pad" key=${i.id}><span>${i.name}</span></div>`)}</div>
