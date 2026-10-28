@@ -1253,15 +1253,68 @@ function PhotoButton({ label, onPick }) {
   </span>`;
 }
 
-/** Fiş fotoğrafı: küçük önizleme, dokununca tam ekran */
+/** Fiş: kayıt açılınca yüklenmez; "Fişi göster" ile tam ekran açılır */
 function ReceiptImage({ path }) {
   const [url, setUrl] = useState(null);
-  const [big, setBig] = useState(false);
-  useEffect(() => { let live = true; api.receiptUrl(path).then(u => live && setUrl(u)).catch(() => {}); return () => { live = false; }; }, [path]);
-  if (!url) return html`<div class="muted center">Fiş yükleniyor…</div>`;
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  async function show() {
+    if (!url) {
+      setLoading(true);
+      try { setUrl(await api.receiptUrl(path)); } catch (err) { alert('Fiş açılamadı: ' + err.message); setLoading(false); return; }
+      setLoading(false);
+    }
+    setOpen(true);
+  }
   return html`
-    <img class="receipt-thumb" src=${url} alt="Fiş" onClick=${() => setBig(true)} />
-    ${big && html`<div class="backdrop center" onClick=${() => setBig(false)}><img class="receipt-big" src=${url} alt="Fiş" /></div>`}`;
+    <button class="primary" onClick=${show} disabled=${loading}>${loading ? 'Açılıyor…' : '🧾 Fişi göster'}</button>
+    ${open && url && html`<${PhotoViewer} url=${url} onClose=${() => setOpen(false)} />`}`;
+}
+
+/** Tam ekran fotoğraf; açık pencerelerin içinde sıkışmasın diye sayfanın en üstüne ayrı çizilir */
+function PhotoViewer(props) {
+  useEffect(() => {
+    const el = document.createElement('div');
+    document.body.appendChild(el);
+    render(html`<${PhotoViewerBody} ...${props} />`, el);
+    return () => { render(null, el); el.remove(); };
+  }, []);
+  return null;
+}
+
+/** İki parmakla yakınlaştır, tek parmakla kaydır, çift dokununca 2,5 kat */
+function PhotoViewerBody({ url, onClose }) {
+  const [v, setV] = useState({ s: 1, x: 0, y: 0 });
+  const g = useRef(null);
+  const lastTap = useRef(0);
+  useEffect(() => { lockScroll(); return unlockScroll; }, []);
+  const dist = t => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  const onStart = e => {
+    const t = e.touches;
+    if (t.length === 2) g.current = { d: dist(t), s: v.s, x: v.x, y: v.y };
+    else if (t.length === 1) {
+      const now = Date.now();
+      if (now - lastTap.current < 280) { setV(v.s > 1 ? { s: 1, x: 0, y: 0 } : { s: 2.5, x: 0, y: 0 }); g.current = null; }
+      else g.current = { px: t[0].clientX, py: t[0].clientY, x: v.x, y: v.y };
+      lastTap.current = now;
+    }
+  };
+  const onMove = e => {
+    const t = e.touches;
+    const s0 = g.current;
+    if (!s0) return;
+    e.preventDefault();
+    if (t.length === 2 && s0.d) setV({ ...v, s: Math.min(6, Math.max(1, s0.s * dist(t) / s0.d)) });
+    else if (t.length === 1 && s0.px != null && v.s > 1) setV({ ...v, x: s0.x + t[0].clientX - s0.px, y: s0.y + t[0].clientY - s0.py });
+  };
+  const onEnd = () => { g.current = null; if (v.s <= 1.02) setV({ s: 1, x: 0, y: 0 }); };
+  const onWheel = e => { e.preventDefault(); setV({ ...v, s: Math.min(6, Math.max(1, v.s * (e.deltaY < 0 ? 1.15 : 0.87))) }); };
+  return html`
+    <div class="viewer" onTouchStart=${onStart} onTouchMove=${onMove} onTouchEnd=${onEnd} onWheel=${onWheel}>
+      <img src=${url} alt="Fiş" style=${`transform: translate(${v.x}px, ${v.y}px) scale(${v.s})`} />
+      <button class="viewer-close" onClick=${onClose} aria-label="Kapat">✕</button>
+      ${v.s === 1 && html`<div class="viewer-hint">İki parmakla yakınlaştır · çift dokun</div>`}
+    </div>`;
 }
 
 /** Alışverişi tamamla: toplam tutar, geçmişe kayıt; istenirse ortak harcama olarak yarı yarıya */
