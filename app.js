@@ -57,8 +57,16 @@ let ME = null;
 const paidKey = (m, who) => `${m}:${who}`;
 /** Harcamanın ödeneceği ay (hesaplaşma bu aya göre); ödeme tarihi yoksa harcama tarihi */
 const payMonth = e => mk(e.pay_date || e.date);
-/** Hesaplaşma günü: harcamadan sonraki ayın 5'i */
-const settleDay = date => `${addM(mk(date), 1)}-05`;
+/** Kartı ödeyenin hesap kesim günü (Ayarlar > Kredi kartı). Kişinin kendi girdiği esas; girmediyse eşinin onun için girdiği. */
+const cutDayOf = (members, uid) => {
+  const own = Number((members || []).find(m => m.user_id === uid)?.notify_prefs?.cut_day);
+  if (own) return own;
+  for (const m of members || []) { const v = Number(m.notify_prefs?.cut_days?.[uid]); if (v) return v; }
+  return null;
+};
+/** Hesaplaşma günü: kart ekstresinin ödendiği ayın 5'i. Kesim gününden sonraki harcama bir sonraki ekstreye girer
+ *  (kesim 25: 20 Ekim → 5 Kasım, 28 Ekim → 5 Aralık). Kesim günü bilinmiyorsa harcamadan sonraki ayın 5'i. */
+const settleDay = (date, cut) => `${addM(mk(date), cut && Number(String(date).slice(8, 10)) > cut ? 2 : 1)}-05`;
 /** O ay bu kişi ödedi mi? (Eski, kişisiz "YYYY-MM" tikleri de sayılır) */
 const isPaid = (item, m, who = ME) => {
   const p = item.paid_months || [];
@@ -301,6 +309,8 @@ function ItemForm({ ctx, kind: initialKind, item, preset, month, onClose, onSave
   const showPay = kind === 'expense' && shared && split === 'half' && !!partnerId;
   const debtor = payer === uid ? partnerId : uid;
   const sentKey = `${paidKey(mk(date), debtor)}:sent`;
+  const cut = cutDayOf(members, payer);
+  const payDay = settleDay(date, cut);
   const initialPay = item
     ? (item.pay_date ? (item.pay_date === item.date ? 'now' : 'settle') : (item.paid_months || []).includes(sentKey) ? 'now' : 'legacy')
     : payer === uid && method !== 'card' ? 'now' : 'settle';
@@ -327,7 +337,7 @@ function ItemForm({ ctx, kind: initialKind, item, preset, month, onClose, onSave
     if (kind === 'expense' && !item) row.paid_months = showMethod && method === 'cash' ? [paidKey(mk(date), uid)] : [];
     if (kind === 'expense' && !showPay) row.pay_date = null;
     if (showPay && payMode !== 'legacy') {
-      row.pay_date = payMode === 'settle' ? settleDay(date) : date;
+      row.pay_date = payMode === 'settle' ? payDay : date;
       // Doğrudan ödenen payı "gönderildi" işaretle; hesaplaşmaya alınırsa işaret kalkar (hesaplaşmada kapandıysa dokunma)
       const k = paidKey(mk(date), debtor);
       const p = row.paid_months || item?.paid_months || [];
@@ -407,9 +417,9 @@ function ItemForm({ ctx, kind: initialKind, item, preset, month, onClose, onSave
           <div class="field col">
             <span>${payer === uid ? 'Eşinin payı ne zaman ödenecek?' : 'Payını ne zaman ödeyeceksin?'}</span>
             <${Seg} value=${payMode === 'legacy' ? '' : payMode} onChange=${v => { setPayPick(v); setErr(''); }}
-              options=${[['settle', `Hesaplaşmada · ${fmtDate(settleDay(date))}`], ['now', 'Harcama günü']]} />
+              options=${[['settle', `Hesaplaşmada · ${fmtDate(payDay)}`], ['now', 'Harcama günü']]} />
             <small class="muted">${{
-              settle: `Ödeme tarihi ${fmtDate(settleDay(date))}: ${monthName(addM(mk(date), 1))} hesaplaşmasına girer, o ayın nakdinden düşer.`,
+              settle: `Ödeme tarihi ${fmtDate(payDay)}: ${monthName(mk(payDay))} hesaplaşmasına girer, o ayın nakdinden düşer.${cut ? ` Kartın hesap kesim günü ${cut}; ${cut}'inden sonraki harcamalar bir sonraki ekstreye girer.` : ' Kartın hesap kesim günü girilmemiş (Ben > Ayarlar > Kredi kartı).'}`,
               now: 'Pay aynı gün gönderilir: hesaplaşmaya girmez, harcama ayının nakdinden düşer.',
               legacy: `Şu an ${monthName(mk(date))} hesaplaşmasında. Değiştirmek için birini seç.`,
             }[payMode]}</small>
@@ -445,7 +455,7 @@ function makeToggle(ctx, m) {
         ? p.filter(x => ![key, m, `${key}:settled`, `${key}:sent`].includes(x))
         : [...p, key, ...(sentToPartner ? [`${key}:sent`] : [])],
       // Gönderdim: ödeme günü harcama günü olur; geri alınırsa hesaplaşma gününe döner
-      ...(partnerPaid ? { pay_date: was ? settleDay(it.date) : it.date } : {}),
+      ...(partnerPaid ? { pay_date: was ? settleDay(it.date, cutDayOf(ctx.members, it.payer_id)) : it.date } : {}),
     });
   };
 }
@@ -1125,7 +1135,8 @@ function ShoppingScreen({ ctx, embedded, personal }) {
     ${!inList.length && html`<div class="card"><${Empty}>${personal ? 'Kişisel listen boş. Sadece sen görürsün; yukarıdan ürün ekle.' : 'Liste boş. Yukarıdan ürün arayıp ekle.'}<//></div>`}
     ${checked.length > 0 && (personal
       ? html`<button class="primary" onClick=${clearChecked}>✓ Alınanları listeden çıkar (${checked.length})</button>`
-      : html`<button class="primary" onClick=${() => setTripOpen(true)}>🧾 Alışverişi tamamla (${checked.length} ürün)</button>`)}
+      : html`<button class="primary" onClick=${() => setTripOpen(true)}>🧾 Alışverişi tamamla (${checked.length} ürün)</button>
+        <button class="link small center-block" onClick=${clearChecked}>Harcama girmeden sadece alındı say</button>`)}
 
     ${!personal && html`<div class="group">
       <div class="group-head"><span>Geçmiş alışverişler</span></div>
@@ -1446,11 +1457,19 @@ function SettingsView({ ctx }) {
     <${PushSettings} />
     <${BankLinkSettings} ctx=${ctx} />
     <${Group} title="Kredi kartı">
-      <label class="field"><span>Hesap kesim günü<small>O gün 22:00'de ekstre hatırlatması gelir</small></span>
+      <label class="field"><span>Senin kartının hesap kesim günü<small>Kesimden sonraki ortak kart harcamaları bir sonraki ayın hesaplaşmasına girer; o gün 22:00'de ekstre hatırlatması gelir</small></span>
         <select value=${prefs.cut_day || ''} onChange=${e => ctx.savePrefs({ ...prefs, cut_day: Number(e.target.value) || null })}>
           <option value="">Seç</option>
           ${Array.from({ length: 31 }, (_, i) => html`<option value=${i + 1}>Her ayın ${i + 1}'i</option>`)}
         </select></label>
+      ${members.filter(m => m.user_id !== uid).map(m => m.notify_prefs?.cut_day
+        ? html`<div class="row pad" key=${m.user_id}><span>${m.display_name} kartının kesim günü<small class="muted"> · ${m.display_name} kendisi girdi</small></span>
+            <b>Her ayın ${m.notify_prefs.cut_day}'i</b></div>`
+        : html`<label class="field" key=${m.user_id}><span>${m.display_name} kartının kesim günü<small>${m.display_name} kendisi girene kadar bu kullanılır</small></span>
+            <select value=${prefs.cut_days?.[m.user_id] || ''} onChange=${e => ctx.savePrefs({ ...prefs, cut_days: { ...(prefs.cut_days || {}), [m.user_id]: Number(e.target.value) || null } })}>
+              <option value="">Seç</option>
+              ${Array.from({ length: 31 }, (_, i) => html`<option value=${i + 1}>Her ayın ${i + 1}'i</option>`)}
+            </select></label>`)}
     <//>
     <${Group} title="Hangi bildirimler gelsin?">
       ${NOTIFY_TYPES.map(([k, title, sub]) => html`
@@ -2164,7 +2183,7 @@ function BankInboxSheet({ ctx, events, onNew, onClose }) {
       if (Math.abs(c.amount - ev.amount) >= 0.01
         && confirm(`Tutar ${tl(c.amount)} yerine bankadaki ${tl(ev.amount)} olarak güncellensin mi?`)) p.amount = ev.amount;
       p.date = day;
-      if (c.it.pay_date) p.pay_date = c.it.pay_date === c.it.date ? day : settleDay(day);
+      if (c.it.pay_date) p.pay_date = c.it.pay_date === c.it.date ? day : settleDay(day, cutDayOf(ctx.members, c.it.payer_id));
     }
     if (ev.kind === 'card') {
       if (c.table === 'expenses') p.on_card = true;
