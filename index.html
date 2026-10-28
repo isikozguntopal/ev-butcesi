@@ -304,6 +304,9 @@
     .modal-nav button:disabled { opacity: .35; }
     .item.tappable { cursor: pointer; }
     .center-block { display: block; margin: 8px auto 0; }
+    .receipt-box { display: grid; gap: 8px; justify-items: center; padding: 12px; }
+    .receipt-thumb { display: block; max-width: 100%; max-height: 260px; border-radius: 12px; margin: 0 auto 8px; object-fit: contain; cursor: zoom-in; }
+    .receipt-big { max-width: 100%; max-height: 92vh; border-radius: 12px; }
     .item.tappable:active { background: var(--accent-soft); }
     .sheet.full { max-height: none; height: 100%; border-radius: 0; padding-top: env(safe-area-inset-top); animation: slide .22s ease-out; }
     @keyframes slide { from { transform: translateX(30px); opacity: 0; } }

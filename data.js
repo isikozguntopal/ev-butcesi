@@ -76,6 +76,16 @@ const remote = {
   async saveNotifyPrefs(uid, prefs) {
     check(await (await client()).from('members').update({ notify_prefs: prefs }).eq('user_id', uid));
   },
+  /** Fiş fotoğrafı: gizli "receipts" deposuna (yol: <aile>/<dosya>.jpg) */
+  async uploadReceipt(path, blob) {
+    check(await (await client()).storage.from('receipts').upload(path, blob, { contentType: 'image/jpeg', upsert: true }));
+  },
+  async receiptUrl(path) {
+    return check(await (await client()).storage.from('receipts').createSignedUrl(path, 3600)).signedUrl;
+  },
+  async removeReceipt(path) {
+    check(await (await client()).storage.from('receipts').remove([path]));
+  },
 };
 
 // --- Deneme modu: her şey bu cihazın localStorage'ında ---
@@ -143,6 +153,18 @@ const demo = {
     writeDb(db);
   },
   async notify() {},
+  // Deneme modunda fiş fotoğrafları bu cihazda (küçültülmüş jpeg)
+  async uploadReceipt(path, blob) {
+    const url = await new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(blob); });
+    const all = JSON.parse(store.get('aile-butcesi-receipts') || '{}');
+    store.set('aile-butcesi-receipts', JSON.stringify({ ...all, [path]: url }));
+  },
+  async receiptUrl(path) { return JSON.parse(store.get('aile-butcesi-receipts') || '{}')[path] || null; },
+  async removeReceipt(path) {
+    const all = JSON.parse(store.get('aile-butcesi-receipts') || '{}');
+    delete all[path];
+    store.set('aile-butcesi-receipts', JSON.stringify(all));
+  },
 };
 
 export const api = DEMO ? demo : remote;

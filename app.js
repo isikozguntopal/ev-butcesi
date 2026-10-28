@@ -1143,7 +1143,7 @@ function ShoppingScreen({ ctx, embedded, personal }) {
       <div class="card">
         ${trips.map(t => html`
           <button class="item" key=${t.id} onClick=${() => setOpenTrip(t)}>
-            <span class="grow"><span class="title">${fmtDate(t.date)} · ${who(t.owner_id)}</span><span class="sub">${(t.items || []).length} ürün${(t.items || []).length ? ` · ${(t.items || []).slice(0, 3).join(', ')}${(t.items || []).length > 3 ? '…' : ''}` : ''}</span></span>
+            <span class="grow"><span class="title">${fmtDate(t.date)} · ${who(t.owner_id)}${t.receipt_path ? ' · 🧾' : ''}</span><span class="sub">${(t.items || []).length} ürün${(t.items || []).length ? ` · ${(t.items || []).slice(0, 3).join(', ')}${(t.items || []).length > 3 ? '…' : ''}` : ''}</span></span>
             <span class="amt">${tl(t.total)}</span><span class="chev-r">›</span></button>`)}
         ${!trips.length && html`<${Empty}>Henüz kayıtlı alışveriş yok<//>`}
       </div>
@@ -1161,6 +1161,7 @@ function TripEditSheet({ ctx, trip, onClose }) {
   const [items, setItems] = useState(trip.items || []);
   const [newItem, setNewItem] = useState('');
   const [busy, setBusy] = useState(false);
+  const [current, setCurrent] = useState(trip.receipt_path || null);
   // Alışveriş tamamlanırken "ortak harcama" olarak eklenen kayıt: aynı gün, aynı tutar, "Market alışverişi" adıyla
   const linked = rows.expenses.find(e => e.date === trip.date && String(e.name).startsWith('Market alışverişi') && Number(e.amount) === Number(trip.total));
   const addItem = () => { const n = newItem.trim(); if (n) { setItems([...items, n]); setNewItem(''); } };
@@ -1180,9 +1181,30 @@ function TripEditSheet({ ctx, trip, onClose }) {
     if (ok !== false) onClose();
   }
   async function remove() {
-    if (!confirm('Bu alışveriş geçmişten silinsin mi?' + (linked ? `\n\nBağlı "${linked.name}" harcaması silinmez; gerekirse Kayıtlar'dan sil.` : ''))) return;
+    if (!confirm('Bu alışveriş geçmişten silinsin mi?')) return;
+    // Bağlı ortak harcama da silinir; yoksa hesaplaşmada kalmaya devam eder
+    if (linked) {
+      if (linked.owner_id !== ctx.uid) alert(`Bağlı "${linked.name}" harcamasını ${ctx.names[linked.owner_id] || 'eşin'} girdiği için sadece o silebilir. Hesaplaşmadan çıkması için ona sildir.`);
+      else if (confirm(`Bağlı "${linked.name}" (${tl(linked.amount)}) harcaması da silinsin mi? Hesaplaşmadan da çıkar.`)) await actions.del('expenses', linked.id);
+    }
+    if (current) api.removeReceipt(current).catch(() => {});
     await actions.del('shopping_trips', trip.id);
     onClose();
+  }
+  async function setReceipt(blob) {
+    try {
+      const path = receiptPath(ctx);
+      await api.uploadReceipt(path, blob);
+      await actions.patch('shopping_trips', trip.id, { receipt_path: path });
+      if (current) api.removeReceipt(current).catch(() => {});
+      setCurrent(path);
+    } catch (err) { alert('Fiş yüklenemedi: ' + err.message); }
+  }
+  async function dropReceipt() {
+    if (!confirm('Fiş fotoğrafı kaldırılsın mı?')) return;
+    await actions.patch('shopping_trips', trip.id, { receipt_path: null });
+    api.removeReceipt(current).catch(() => {});
+    setCurrent(null);
   }
 
   return html`
@@ -1193,6 +1215,13 @@ function TripEditSheet({ ctx, trip, onClose }) {
         <label class="field"><span>Ödenen toplam</span><${MoneyInput} value=${total} onInput=${setTotal} /></label>
       </div>
       ${linked && html`<p class="hint">Bağlı harcama: ${linked.name} · ${tl(linked.amount)}. Kaydedince istersen o da güncellenir.</p>`}
+      <${Group} title="Fiş">
+        <div class="pad receipt-box">
+          ${current ? html`<${ReceiptImage} path=${current} key=${current} />` : html`<div class="muted">Fiş fotoğrafı yok</div>`}
+          <${PhotoButton} label=${current ? '📷 Fişi değiştir' : '📷 Fiş fotoğrafı ekle'} onPick=${setReceipt} />
+          ${current && html`<button class="link small" onClick=${dropReceipt}>Fişi kaldır</button>`}
+        </div>
+      <//>
       <${Group} title=${`Ürünler (${items.length})`}>
         ${items.map((n, k) => html`<${SwipeRow} key=${n + k} onDelete=${() => setItems(items.filter((_, j) => j !== k))}>
           <div class="row pad"><span>${n}</span><button class="link small" onClick=${() => setItems(items.filter((_, j) => j !== k))}>Çıkar</button></div><//>`)}
@@ -1203,17 +1232,56 @@ function TripEditSheet({ ctx, trip, onClose }) {
     <//>`;
 }
 
+/** Fiş fotoğrafını küçültür (en uzun kenar 1400px, jpeg) */
+async function shrinkPhoto(file) {
+  const img = await createImageBitmap(file);
+  const k = Math.min(1, 1400 / Math.max(img.width, img.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  return new Promise(res => c.toBlob(res, 'image/jpeg', 0.8));
+}
+const receiptPath = ctx => `${ctx.household.id}/${crypto.randomUUID ? crypto.randomUUID() : Date.now()}.jpg`;
+
+/** Fotoğraf seç düğmesi (iPhone'da kamera ya da galeri) */
+function PhotoButton({ label, onPick }) {
+  const ref = useRef(null);
+  return html`<span>
+    <button class="primary ghost" onClick=${() => ref.current.click()}>${label}</button>
+    <input ref=${ref} type="file" accept="image/*" style="display:none"
+      onChange=${async e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) onPick(await shrinkPhoto(f)); }} />
+  </span>`;
+}
+
+/** Fiş fotoğrafı: küçük önizleme, dokununca tam ekran */
+function ReceiptImage({ path }) {
+  const [url, setUrl] = useState(null);
+  const [big, setBig] = useState(false);
+  useEffect(() => { let live = true; api.receiptUrl(path).then(u => live && setUrl(u)).catch(() => {}); return () => { live = false; }; }, [path]);
+  if (!url) return html`<div class="muted center">Fiş yükleniyor…</div>`;
+  return html`
+    <img class="receipt-thumb" src=${url} alt="Fiş" onClick=${() => setBig(true)} />
+    ${big && html`<div class="backdrop center" onClick=${() => setBig(false)}><img class="receipt-big" src=${url} alt="Fiş" /></div>`}`;
+}
+
 /** Alışverişi tamamla: toplam tutar, geçmişe kayıt; istenirse ortak harcama olarak yarı yarıya */
 function TripSheet({ ctx, checked, onClose }) {
   const { uid, actions } = ctx;
   const [total, setTotal] = useState(0);
   const [shared, setShared] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [photo, setPhoto] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const pick = b => { setPhoto(b); setPreview(URL.createObjectURL(b)); };
   async function save() {
     if (busy || !(total > 0)) return;
     setBusy(true);
     const d = today();
-    const ok = await actions.add('shopping_trips', { date: d, total, items: checked.map(i => i.name) });
+    let receipt_path = null;
+    if (photo) {
+      try { receipt_path = receiptPath(ctx); await api.uploadReceipt(receipt_path, photo); } catch (err) { alert('Fiş yüklenemedi: ' + err.message); receipt_path = null; }
+    }
+    const ok = await actions.add('shopping_trips', { date: d, total, items: checked.map(i => i.name), ...(receipt_path ? { receipt_path } : {}) });
     if (ok === false) { setBusy(false); return; }
     if (shared) {
       await actions.add('expenses', {
@@ -1233,6 +1301,8 @@ function TripSheet({ ctx, checked, onClose }) {
         <label class="field toggle"><span>Ortak harcama olarak kaydet<small>Yarı yarıya ikinizin bütçesine de yansır</small></span>
           <input type="checkbox" checked=${shared} onChange=${e => setShared(e.target.checked)} /></label>
       </div>
+      ${preview ? html`<img class="receipt-thumb" src=${preview} alt="Fiş" />` : ''}
+      <${PhotoButton} label=${photo ? '📷 Fişi değiştir' : '📷 Fiş fotoğrafı ekle'} onPick=${pick} />
       <div class="card rows">${checked.map(i => html`<div class="row pad" key=${i.id}><span>${i.name}</span></div>`)}</div>
       <p class="hint">Kaydedince alışveriş geçmişe yazılır ve bu ürünler listeden çıkar.</p>
     <//>`;
