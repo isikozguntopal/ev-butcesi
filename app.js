@@ -2156,24 +2156,45 @@ function BankInboxSheet({ ctx, events, onNew, onClose }) {
     <//>`;
 }
 
-/** Ayarlar: Gmail betiği için adres ve kişisel anahtar */
+/** Ayarlar: bankadan otomatik aktarım kaynağı (kapalı / e-posta / SMS; aynı anda biri) ve kurulum bilgileri */
 function BankLinkSettings({ ctx }) {
-  const link = (ctx.rows.bank_links || []).find(l => l.user_id === ctx.uid) || (ctx.rows.bank_links || [])[0];
+  const { rows, uid, members, savePrefs } = ctx;
+  const link = (rows.bank_links || []).find(l => l.user_id === uid) || (rows.bank_links || [])[0];
+  const prefs = members.find(m => m.user_id === uid)?.notify_prefs || {};
+  const source = prefs.bank_source || 'off';
   const [copied, setCopied] = useState('');
-  const address = SUPABASE_URL ? `${SUPABASE_URL}/functions/v1/bank` : '';
+  const address = SUPABASE_URL && link ? `${SUPABASE_URL}/functions/v1/bank?k=${link.token}` : '';
   async function copy(k, v) {
     try { await navigator.clipboard.writeText(v); setCopied(k); setTimeout(() => setCopied(''), 1500); } catch { /* ekranda görünüyor */ }
   }
+  const btn = (k, label, v) => html`<button class="code" onClick=${() => copy(k, v)}>${copied === k ? 'Kopyalandı' : label}</button>`;
+  if (!SUPABASE_URL) return html`<${Group} title="Bankadan otomatik aktarım"><${Empty}>Deneme modunda kullanılamaz<//><//>`;
   return html`
-    <${Group} title="Banka bağlantısı">
-      ${!address ? html`<${Empty}>Deneme modunda kullanılamaz<//>`
-        : !link ? html`<div class="row pad"><span>Gmail'deki banka e-postalarını uygulamaya aktarmak için anahtar oluştur</span></div>
-            <button class="primary ghost" onClick=${() => ctx.actions.insertRaw('bank_links', {})}>Anahtar oluştur</button>`
-        : html`
-          <div class="row pad"><span>Gmail betiği ayarları<small class="muted"> · içinde kişisel anahtarın var, kimseyle paylaşma</small></span>
-            <button class="code" onClick=${() => copy('s', [`const ADRES = '${address}';`, `const ACIK_ANAHTAR = '${SUPABASE_ANON_KEY}';`, `const ANAHTAR = '${link.token}';`].join('\n'))}>${copied === 's' ? 'Kopyalandı' : 'Betik ayarlarını kopyala'}</button></div>`}
+    <${Group} title="Bankadan otomatik aktarım">
+      <div class="field col">
+        <span>Kart harcamaları ve bakiye nereden gelsin?<small>İkisi aynı anda açık olmaz, böylece harcama iki kez gelmez</small></span>
+        <${Seg} value=${source} onChange=${v => savePrefs({ ...prefs, bank_source: v === 'off' ? null : v })}
+          options=${[['off', 'Kapalı'], ['email', '✉️ E-posta'], ['sms', '💬 SMS']]} />
+      </div>
+      ${source !== 'off' && !link && html`
+        <div class="row pad"><span>Önce kişisel bağlantı anahtarını oluştur</span></div>
+        <button class="primary ghost" onClick=${() => ctx.actions.insertRaw('bank_links', {})}>Anahtar oluştur</button>`}
+      ${source === 'email' && link && html`
+        <div class="row pad"><span>Gmail betiği<small class="muted"> · içinde kişisel anahtarın var, paylaşma</small></span>
+          ${btn('e', 'Betik ayarlarını kopyala', [`const ADRES = '${address}';`, `const ACIK_ANAHTAR = '${SUPABASE_ANON_KEY}';`].join('\n'))}</div>`}
+      ${source === 'sms' && link && html`
+        <div class="row pad"><span>1. Adres<small class="muted"> · paylaşma</small></span>${btn('u', 'Kopyala', address)}</div>
+        <div class="row pad"><span>2. Yetki (Authorization)</span>${btn('h', 'Kopyala', `Bearer ${SUPABASE_ANON_KEY}`)}</div>`}
     <//>
-    ${address && link && html`<p class="hint">Gmail betiğindeki const ADRES, const ACIK_ANAHTAR ve const ANAHTAR satırlarını bununla değiştir. Bankadan gelen kart harcamaları uygulamayı açınca "Yeni harcama belirlendi" olarak sorulur, günlük bakiye Bu Ay ekranında görünür.</p>`}`;
+    ${source === 'email' && link && html`<p class="hint">script.google.com'daki betikte const ADRES ve const ACIK_ANAHTAR satırlarını bununla değiştir.</p>`}
+    ${source === 'sms' && link && html`<div class="hint">
+      <b>iPhone'da kurulum (bir kez):</b><br />
+      Kestirmeler → Otomasyon → + → <b>Mesaj</b> → Gönderen: Yapı Kredi (ya da "Mesaj içerir: TL") → <b>Hemen Çalıştır</b> → İleri<br />
+      Yeni boş otomasyon → eylem ekle: <b>URL'nin İçeriklerini Al</b><br />
+      · URL: 1. Adres<br />
+      · Yöntem: POST · Başlıklar: <b>Authorization</b> = 2. Yetki<br />
+      · İstek Gövdesi: JSON → <b>source</b> (Metin) = sms · <b>text</b> (Metin) = Kestirme Girdisi<br />
+      Bankadan SMS gelince kart harcaması uygulamayı açtığında "Yeni harcama belirlendi" olarak sorulur, bakiye Bu Ay ekranında görünür.</div>`}`;
 }
 
 function QuickAdd({ onTap }) {

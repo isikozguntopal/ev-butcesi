@@ -1,30 +1,41 @@
-# Banka e-postalarını uygulamaya aktarma (Gmail)
+# Bankadan otomatik aktarım (SMS ya da e-posta)
 
-Bankadan gelen kart harcaması ve günlük bakiye e-postaları, Gmail'deki küçük bir betikle uygulamaya gönderilir.
-Kart harcamaları uygulamayı açınca "Yeni harcama belirlendi" olarak sorulur; bakiye Bu Ay ekranında görünür.
+Bankanın kart harcaması, para giriş/çıkışı ve bakiye mesajları uygulamaya kendiliğinden gelir.
+Kart harcamaları uygulamayı açınca "Yeni harcama belirlendi" olarak sorulur (eşleştir / yeni harcama / yok say);
+bakiye Bu Ay ekranında "Bankadaki bakiye" olarak görünür.
 
-## 1. Banka
-- Akıllı Asistan'da kart harcaması (alt sınır 1 TL) ve günlük bakiye bildirimlerini **e-posta** kanalına ayarla.
-- E-Posta Ayarı'nda "E-postalarımın finansal bilgilerimi içerecek şekilde iletilmesini istiyorum" açık olsun.
+Uygulamada **Ben > Ayarlar > Bankadan otomatik aktarım** bölümünden kaynağı seç: Kapalı / E-posta / SMS.
+İkisi aynı anda açık olmaz; seçili olmayan kaynaktan gelen mesaj kaydedilmez. Seçtikten sonra **Anahtar oluştur**.
 
-## 2. Gmail etiketi
-Bilgisayarda gmail.com > arama kutusundaki ayar simgesi:
-- Kimden: `yapikredi.com.tr`
-- Kelimeleri içeren: `-subject:Kampanya`
-- Filtre oluştur > Gelen Kutusunu atla, Etiketi uygula: `Yapı Kredi`, eşleşen ileti dizilerine de uygula.
+Tutar, işyeri ve bakiye uygulamanın sunucusunda ayıklanır. Okunamayan bir mesaj olursa sadece sunucu güncellenir;
+kestirmeyi ya da betiği yeniden kurmak gerekmez.
 
-## 3. Anahtar
-Uygulamada Ben > Ayarlar > Banka bağlantısı > **Anahtar oluştur**, sonra **Betik ayarlarını kopyala**.
+## SMS ile (iPhone Kestirmeler)
 
-## 4. Betik
-1. Bilgisayarda script.google.com > **Yeni proje**.
-2. Açılan dosyanın içini sil, `gmail-betigi.js` dosyasının tamamını yapıştır.
-3. `const ADRES`, `const ACIK_ANAHTAR` ve `const ANAHTAR` ile başlayan 3 satırı seçip uygulamadan kopyaladığını yapıştır.
-4. Kaydet (disk simgesi). Proje adı: "Aile Bütçesi Banka".
-5. Üstteki fonksiyon menüsünden **dene**'yi seç > **Çalıştır**. İlk seferde Google izin ister:
-   İzinleri incele > hesabını seç > "Gelişmiş" > "…(güvenli değil) sayfasına git" > İzin ver.
-   (Betiği sen yazdığın için Google doğrulamamış der; betik sadece senin hesabında çalışır.)
-6. Alttaki **Yürütme günlüğü**'nde son e-postaların nasıl okunduğu görünür. "OKUNAMADI" yazanları bana gönder.
-7. Her şey doğruysa fonksiyon menüsünden **kur**'u seç > **Çalıştır**. Artık her 5 dakikada bir kendiliğinden çalışır.
+1. Bankada kart harcaması ve hesap hareketi bildirimlerini SMS kanalına aç.
+2. Uygulamada kaynak: **SMS**. "1. Adres" ve "2. Yetki" değerlerini buradan kopyalayacaksın.
+3. iPhone > **Kestirmeler** > **Otomasyon** > **+** > **Mesaj**
+   - Gönderen: bankanın SMS adı (ör. Yapı Kredi). Listede yoksa "Mesaj İçerir" alanına `TL` yaz.
+   - **Hemen Çalıştır**'ı seç ("Çalıştırmadan Önce Sor" kapalı) > İleri > **Yeni Boş Otomasyon**.
+4. Eylem ekle: **URL'nin İçeriklerini Al**
+   - URL: 1. Adres
+   - Yöntem: **POST**
+   - Başlıklar: anahtar `Authorization`, değer 2. Yetki
+   - İstek Gövdesi: **JSON** > iki alan:
+     - `source` (Metin) = `sms`
+     - `text` (Metin) = **Kestirme Girdisi** (değişken listesinden seç)
+5. Bitti. Bir sonraki banka SMS'inde otomatik çalışır.
 
-Durdurmak için: script.google.com > projen > sol menü **Tetikleyiciler** > tetikleyiciyi sil.
+## E-posta ile (Gmail betiği)
+
+1. Bankada bildirimleri e-posta kanalına aç; "E-postalarımın finansal bilgilerimi içerecek şekilde iletilmesini istiyorum" açık olsun.
+2. Gmail filtresi (bilgisayarda gmail.com > arama kutusundaki ayar simgesi):
+   Kimden `yapikredi.com.tr`, Kelimeleri içeren `-subject:Kampanya` > Filtre oluştur > Gelen Kutusunu atla, etiket `Yapı Kredi`.
+3. Uygulamada kaynak: **E-posta** > **Betik ayarlarını kopyala**.
+4. script.google.com > **Yeni proje** > içini sil, `gmail-betigi.js` dosyasının tamamını yapıştır.
+   `const ADRES` ve `const ACIK_ANAHTAR` satırlarını kopyaladığınla değiştir > Kaydet.
+5. Fonksiyon menüsünden **dene** > Çalıştır. İlk seferde Google izin ister:
+   İzinleri incele > hesabın > Gelişmiş > "…(güvenli değil) sayfasına git" > İzin ver.
+   Yürütme günlüğünde son e-postaların nasıl okunduğu görünür; "OKUNAMADI" olanları bildir.
+6. Doğruysa **kur** > Çalıştır. Her 5 dakikada bir kendiliğinden çalışır.
+   Durdurmak için: projede sol menü **Tetikleyiciler** > sil.

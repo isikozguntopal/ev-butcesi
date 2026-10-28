@@ -1,9 +1,12 @@
-// Supabase Edge Function: Gmail'deki betikten gelen banka olaylarını kaydeder.
-// İstek: POST { token, events: [{ kind, amount, merchant?, occurred_at?, msg_id, subject? }] }
-// token, uygulamada Ayarlar > Banka bağlantısı'ndaki kişisel anahtardır (bank_links tablosu).
+// Supabase Edge Function: bankanın SMS'lerini (iPhone Kestirmeler) ve e-postalarını (Gmail betiği) kaydeder.
+// İstek: POST ?k=<anahtar>  { source: 'sms' | 'email', text } ya da { source, texts: [{ text, id?, at? }] }
+//   dry: true → kaydetmeden ayıklanan sonucu döndürür (betikteki "dene").
+// Anahtar uygulamada Ayarlar > Banka bağlantısı'ndaki kişisel anahtardır (bank_links); gövdede token olarak da gelebilir.
+// Sadece uygulamada seçili kaynak (Ayarlar: E-posta / SMS) kaydedilir; ikisi aynı anda açık olmaz.
 // Yeni kart harcamasında sahibine bildirim gider. Gerekli Secrets: VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY.
 import webpush from 'npm:web-push@3.6.7';
 import { createClient } from 'npm:@supabase/supabase-js@2.45.4';
+import { parseBankText } from './parse.ts';
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -17,14 +20,35 @@ webpush.setVapidDetails(
 const KINDS = ['card', 'balance', 'in', 'out'];
 const tl = (v: number) => new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY' }).format(v);
 
-type Event = { kind: string; amount: number; merchant?: string; occurred_at?: string; msg_id: string; subject?: string };
+type Event = { kind: string; amount: number; merchant?: string | null; occurred_at?: string | null; msg_id: string; subject?: string };
+type Text = { text: string; id?: string; at?: string };
+
+async function sha(s: string) {
+  const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+  return [...new Uint8Array(h)].map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 40);
+}
+
+/** Ham metinlerden olaylar; her metnin kimliği (e-posta id'si ya da SMS metninin özeti) tekrar kaydı engeller */
+async function fromTexts(texts: Text[]): Promise<Event[]> {
+  const out: Event[] = [];
+  for (const t of texts) {
+    const text = String(t.text ?? '').slice(0, 4000);
+    if (!text.trim()) continue;
+    const base = t.id ? String(t.id) : await sha(text);
+    for (const p of parseBankText(text)) {
+      out.push({ ...p, occurred_at: p.occurred_at ?? t.at ?? null, msg_id: `${base}:${p.kind}`, subject: text.slice(0, 120) });
+    }
+  }
+  return out;
+}
 
 Deno.serve(async req => {
   if (req.method !== 'POST') return json({ error: 'POST bekleniyor' }, 405);
-  let body: { token?: string; events?: Event[] };
+  let body: { token?: string; source?: string; events?: Event[]; texts?: Text[]; text?: string; at?: string; dry?: boolean };
   try { body = await req.json(); } catch { return json({ error: 'Geçersiz istek' }, 400); }
-  const token = String(body.token ?? '');
+  const token = String(new URL(req.url).searchParams.get('k') ?? body.token ?? '');
   if (token.length < 32) return json({ error: 'Anahtar yok' }, 401);
+  const texts: Text[] = body.texts ?? (body.text ? [{ text: body.text, at: body.at }] : []);
 
   const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
   const { data: link } = await admin.from('bank_links').select('user_id').eq('token', token).maybeSingle();
@@ -33,7 +57,14 @@ Deno.serve(async req => {
   const { data: member } = await admin.from('members').select('household_id, notify_prefs').eq('user_id', uid).maybeSingle();
   if (!member) return json({ error: 'Aile bulunamadı' }, 404);
 
-  const events = (body.events ?? []).filter(e =>
+  const parsed = await fromTexts(texts);
+  if (body.dry) return json({ ok: true, dry: true, events: parsed });
+  // Uygulamada seçili olmayan kaynaktan geleni kaydetme (çift kayıt olmasın)
+  const source = body.source ?? 'email';
+  const chosen = (member.notify_prefs ?? {}).bank_source;
+  if (chosen !== source) return json({ ok: true, skipped: `Uygulamada ${source === 'sms' ? 'SMS' : 'e-posta'} aktarımı kapalı` });
+
+  const events = [...(body.events ?? []), ...parsed].filter(e =>
     KINDS.includes(e.kind) && Number.isFinite(Number(e.amount)) && typeof e.msg_id === 'string' && e.msg_id);
   const rows = events.map(e => ({
     household_id: member.household_id,
