@@ -55,7 +55,7 @@ async function monthly(admin: Admin) {
       '💳 Kredi kartı ödemesi', 'Bu ay kartına ne kadar ödediğini girmeyi unutma 🐷');
   }
   if (day === 5) {
-    sent += await sendTo(admin, wants('payday'), '💸 Hesaplaşma günü', 'Geçen ayın ortak harcamalarına göre kimin kime ne atacağı hazır 🐻');
+    sent += await sendTo(admin, wants('payday'), '💸 Hesaplaşma günü', 'Bu ayın ortak harcamalarına göre kimin kime ne atacağı hazır 🐻');
   }
   return { day, sent };
 }

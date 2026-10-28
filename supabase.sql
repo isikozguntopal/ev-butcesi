@@ -258,3 +258,11 @@ create table if not exists shopping_trips (
 alter table shopping_trips enable row level security;
 drop policy if exists "aile" on shopping_trips;
 create policy "aile" on shopping_trips for all using (household_id = my_household()) with check (household_id = my_household());
+
+-- Harcama ödeme tarihi ve kişisel alışveriş listesi (migrations/012)
+alter table expenses add column if not exists pay_date date;
+alter table shopping_items add column if not exists owner_id uuid references auth.users on delete cascade;
+drop policy if exists "aile" on shopping_items;
+create policy "aile" on shopping_items for all
+  using (household_id = my_household() and (owner_id is null or owner_id = auth.uid()))
+  with check (household_id = my_household() and (owner_id is null or owner_id = auth.uid()));
