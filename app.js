@@ -1892,7 +1892,7 @@ const OzetGroup = ({ id, title, total, open, onToggle, children, sign = 'out', n
 };
 
 /** Kayıt satırı: dokununca hemen altında detay açılır */
-function OzetItem({ ctx, m, it, table, kind, amt, open, onToggle, sign = 'out', status }) {
+function OzetItem({ ctx, m, it, table, kind, amt, open, onToggle, sign = 'out', status, onCardView }) {
   const { uid, names } = ctx;
   const paid = isPaid(it, m);
   const payer = it.payer_id === uid ? 'sen' : names[it.payer_id] || 'eşin';
@@ -1901,7 +1901,13 @@ function OzetItem({ ctx, m, it, table, kind, amt, open, onToggle, sign = 'out', 
     <div>
       <button class="item" onClick=${onToggle}>
         <span class="grow"><span class="title">${it.name}</span>
-          <span class="sub">${kind === 'installment' ? `${inst.remaining(it, m)} taksit kaldı · ` : ''}${onCardItem(it, table) ? 'kredi kartı' : 'nakit'}${it.shared ? ` · ortak (${payer} ödedi)` : ''}${status && html` · <b class=${status.tone}>${status.text}</b>`}</span></span>
+          <span class="sub">${[
+            kind === 'installment' && `${inst.remaining(it, m)} taksit kaldı`,
+            // Kart ekranında hepsi kartla; ödeme şekli yazılmaz
+            !onCardView && (onCardItem(it, table) ? 'kredi kartı' : 'nakit'),
+            it.shared && `ortak (${payer} ödedi)`,
+            status && html`<b class=${status.tone}>${status.text}</b>`,
+          ].filter(Boolean).flatMap((x, i) => (i ? [' · ', x] : [x]))}</span></span>
         <span class=${'amt ' + signed(amt, sign === 'in').tone}>${signed(amt, sign === 'in').text}</span>
       </button>
       ${open && html`<div class="detail-inline">
@@ -1944,7 +1950,7 @@ function OzetGroups({ ctx, m, view, focus }) {
   const itemKey = (k, id) => `${k}:${id}`;
   const itemsOf = (k, list, table, kind) => list.map(x => ({ ...x, table, kind, key: itemKey(k, x.it.id) }));
   const renderItems = (list, status = cashStatus) => list.map(x => html`<${OzetItem} key=${x.key} ctx=${ctx} m=${m} it=${x.it} table=${x.table}
-    kind=${x.kind} amt=${x.amt ?? x.amount} sign=${x.sign || 'out'} status=${status && status(x)} open=${itemOpen === x.key} onToggle=${() => setItemOpen(itemOpen === x.key ? null : x.key)} />`);
+    kind=${x.kind} amt=${x.amt ?? x.amount} sign=${x.sign || 'out'} status=${status && status(x)} onCardView=${view === 'kart'} open=${itemOpen === x.key} onToggle=${() => setItemOpen(itemOpen === x.key ? null : x.key)} />`);
   const rec = (rows.settlements || []).find(x => x.month === m);
   const settleDone = b.settleIn < 0 ? !!rec?.sent_at : !!rec?.received_at;
   const cardKind = k => cards.filter(c => c.kind === k);
