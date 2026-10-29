@@ -395,9 +395,8 @@ function ItemForm({ ctx, kind: initialKind, item, preset, month, onClose, onSave
   }
 
   async function remove() {
-    if (!confirm(`"${item.name}" silinsin mi?`)) return;
-    await actions.del(table, item.id);
-    onClose();
+    if (!confirm(`"${item.name}" silinsin mi?${item.shared ? '\n\nOrtak kayıt; ikinizin ekranından da kalkar.' : ''}`)) return;
+    if (await actions.del(table, item.id) !== false) onClose();
   }
 
   const titles = { expense: 'Harcama', installment: 'Taksit', fixed: 'Aylık Ödeme' };
@@ -465,7 +464,7 @@ function ItemForm({ ctx, kind: initialKind, item, preset, month, onClose, onSave
             }[payMode]}</small>
           </div>`}
       </div>
-      ${item && item.owner_id === uid && html`<button class="danger" onClick=${remove}>Sil</button>`}
+      ${item && (item.owner_id === uid || item.shared) && html`<button class="danger" onClick=${remove}>🗑️ ${{ expense: 'Harcamayı', installment: 'Taksiti', fixed: 'Aylık ödemeyi' }[kind]} sil</button>`}
     <//>`;
 }
 
