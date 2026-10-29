@@ -244,6 +244,46 @@ function FoldGroup({ id, title, count, total, children }) {
     </div>`;
 }
 
+const REDUCE = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+/** Tutar yeni değerine sayarak gelir (ease-out); hareket azaltılmışsa doğrudan yazılır */
+function CountUp({ value }) {
+  const to = Number(value) || 0;
+  const [shown, setShown] = useState(REDUCE ? to : 0);
+  const from = useRef(REDUCE ? to : 0);
+  useEffect(() => {
+    if (REDUCE) { setShown(to); return; }
+    const a = from.current, t0 = performance.now(), dur = 900;
+    let raf;
+    const step = t => {
+      const p = Math.min(1, (t - t0) / dur);
+      const v = a + (to - a) * (1 - Math.pow(1 - p, 4));
+      setShown(p < 1 ? v : to);
+      from.current = v;
+      if (p < 1) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [to]);
+  return html`<span class="num">${tl(Math.round(shown * 100) / 100)}</span>`;
+}
+/** Durum etiketi: tamamlananlarda tik kendini çizer, bekleyenlerde nokta yanıp söner */
+const Chip = ({ status }) => {
+  const ok = status.tone === 'pos';
+  return html`<span class=${'chip ' + (ok ? 'ok' : 'wait')}>${ok
+    ? html`<svg viewBox="0 0 12 12" aria-hidden="true"><path pathLength="1" d="M2 6.5l2.5 2.5L10 3.5" /></svg>`
+    : html`<i aria-hidden="true"></i>`}${status.text.replace(/\s*✓$/, '')}</span>`;
+};
+/** Ayın ne kadarı harcandı: gelire göre dolan halka */
+const Ring = ({ ratio, label }) => html`
+  <svg class="ring" viewBox="0 0 84 84" aria-label=${`Gelirin yüzde ${Math.round(ratio * 100)} kadarı`}>
+    <defs><linearGradient id="ring-g" x1="0" x2="1"><stop offset="0" stop-color="var(--pos)" /><stop offset="1" stop-color="var(--accent-2)" /></linearGradient></defs>
+    <circle class="ring-track" cx="42" cy="42" r="34" />
+    <circle class=${'ring-val' + (ratio > 1 ? ' over' : '')} cx="42" cy="42" r="34" pathLength="100" transform="rotate(-90 42 42)"
+      style=${`stroke-dashoffset:${100 - Math.min(1, ratio) * 100}`} />
+    <text x="42" y="44" class="ring-num">%${Math.round(ratio * 100)}</text>
+    <text x="42" y="56" class="ring-sub">${label}</text>
+  </svg>`;
+
 const Empty = ({ children }) => html`<div class="empty"><span class="mini">${faceFor(children)}</span>${children}</div>`;
 
 function PayRow({ title, sub, amount, full, paid, onToggle, onOpen }) {
@@ -543,15 +583,20 @@ function MonthScreen({ ctx }) {
     <div class="carousel" onTouchStart=${onTouchStart} onTouchEnd=${onTouchEnd}>
       <div class="track" style=${`transform: translateX(${page === 0 ? 0 : -50}%)`}>
         <section class="page">
-      <div class="card hero">
-        <div class="muted">Ay sonunda kalan (nakit bakiye)</div>
-        <div class=${'big ' + (left < 0 ? 'neg' : 'pos')}>${tl(left)}</div>
+      <div class="card hero glass">
+        <div class="hero-top">
+          <div class="grow">
+            <div class="muted">Ay sonunda kalan</div>
+            <div class=${'big ' + (left < 0 ? 'neg' : 'pos')}><${CountUp} value=${left} /></div>
+          </div>
+          ${income > 0 && html`<${Ring} ratio=${b.out / income} label="harcandı" />`}
+        </div>
         ${!income && html`<div class="sub">Ben → Birikimim bölümüne aylık gelirini yaz</div>`}
         <div class="rows">
           <div class="row"><span>Gelir</span><b>${tl(income)}</b></div>
           ${carryAmt !== 0 && html`<div class="row"><span>Önceki aydan devir</span><b>${tl(carryAmt)}</b></div>`}
           ${bank != null && html`
-            <div class="row"><span>Bankadaki bakiye<small class="muted"> · ${whenShort(fin.bank_balance_at)}</small></span><b>${tl(bank)}</b></div>
+            <div class="row"><span><i class="live" aria-hidden="true"></i>Bankadaki bakiye<small class="muted"> · ${whenShort(fin.bank_balance_at)}</small></span><b>${tl(bank)}</b></div>
             ${Math.abs(bankDiff) >= 1 && html`<div class="row"><span>Uygulamayla fark</span>
               <span class="flow-right"><b class=${bankDiff < 0 ? 'neg' : 'pos'}>${signed(bankDiff).text}</b><button class="flow-btn" aria-label="Bakiyeyi eşitle" onClick=${() => setBalOpen(true)}>›</button></span></div>`}`}
         </div>
@@ -1065,7 +1110,7 @@ function SwipeRow({ onDelete, children }) {
   };
   return html`
     <div class="swipe-row">
-      <button class="swipe-del" onClick=${onDelete}>Sil</button>
+      ${dx < 0 && html`<button class="swipe-del" style=${`opacity:${Math.min(1, -dx / 48)}`} onClick=${onDelete}>Sil</button>`}
       <div class="swipe-body" style=${`transform: translateX(${dx}px); transition: ${moving ? 'none' : 'transform .2s ease'}`}
         onTouchStart=${onStart} onTouchMove=${onMove} onTouchEnd=${onEnd}>${children}</div>
     </div>`;
@@ -1906,7 +1951,7 @@ function OzetItem({ ctx, m, it, table, kind, amt, open, onToggle, sign = 'out', 
             // Kart ekranında hepsi kartla; ödeme şekli yazılmaz
             !onCardView && (onCardItem(it, table) ? 'kredi kartı' : 'nakit'),
             it.shared && `ortak (${payer} ödedi)`,
-            status && html`<b class=${status.tone}>${status.text}</b>`,
+            status && html`<${Chip} status=${status} />`,
           ].filter(Boolean).flatMap((x, i) => (i ? [' · ', x] : [x]))}</span></span>
         <span class=${'amt ' + signed(amt, sign === 'in').tone}>${signed(amt, sign === 'in').text}</span>
       </button>
@@ -1985,13 +2030,12 @@ function CardGauge({ limit, used }) {
   const ratio = limit > 0 ? Math.min(1, Math.max(0, used / limit)) : 0;
   const hue = Math.round(120 * (1 - ratio));
   return html`
-    <div class="gauge">
-      <div class="muted">Kart limiti</div>
-      <div class="big gauge-limit">${tl(limit)}</div>
-      <div class="gauge-bar"><div style=${`width:${(ratio * 100).toFixed(1)}%;background:hsl(${hue} 70% 46%)`}></div></div>
-      <div class="gauge-row">
-        <span>Kullanılan <b>${tl(used)}</b></span>
-        <span>Kullanılabilir <b class="gauge-avail" style=${`color:hsl(${hue} 70% 38%)`}>${tl(avail)}</b></span>
+    <div class="ccard">
+      <div class="ccard-top"><span>Kullanılabilir limit</span><span class="ccard-chip" aria-hidden="true"></span></div>
+      <div class="ccard-big" style=${`color:hsl(${hue} 75% 70%)`}><${CountUp} value=${avail} /></div>
+      <div>
+        <div class="ccard-bar"><i style=${`transform:scaleX(${ratio.toFixed(3)})`}></i></div>
+        <div class="ccard-row"><span>Kullanılan <b>${tl(used)}</b></span><span>Limit <b>${tl(limit)}</b></span></div>
       </div>
     </div>`;
 }
@@ -2015,7 +2059,7 @@ function CardPanel({ ctx, m, onLimit, onCard }) {
   };
   return html`
     <div class="group">
-      <div class="card hero">
+      <div class="hero card-hero">
         <${CardGauge} limit=${limit} used=${used} />
         <button class="link small" onClick=${onLimit}>💳 Kart bilgilerini güncelle</button>
       </div>
@@ -2676,8 +2720,10 @@ function App() {
   const goTab = id => {
     if (id === tab) return;
     hist.current = [...hist.current.slice(-19), tab];
-    setTab(id);
-    window.scrollTo(0, 0);
+    const swap = () => { setTab(id); window.scrollTo(0, 0); };
+    // Preact bir sonraki mikro görevde çizer; geçiş yeni ekran çizildikten sonra başlasın
+    if (document.startViewTransition && !REDUCE) document.startViewTransition(() => { swap(); return new Promise(r => setTimeout(r, 0)); });
+    else swap();
   };
   const back = () => {
     const prev = hist.current.pop();
