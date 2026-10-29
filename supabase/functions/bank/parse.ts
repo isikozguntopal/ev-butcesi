@@ -14,7 +14,8 @@ const num = (s: string) => Number(s.replace(/\./g, '').replace(',', '.'));
 
 /** "28/10/2026 12:46:44" ya da "28.10.2026 12:46" → Türkiye saatiyle ISO */
 function dateOf(t: string): string | null {
-  const d = t.match(/(\d{2})[./](\d{2})[./](\d{4})(?:\s+(\d{2}):(\d{2})(?::(\d{2}))?)?/);
+  // "Tarih:28.10.2026 Saat:19:15" biçimi de olur
+  const d = t.match(/(\d{2})[./](\d{2})[./](\d{4})(?:\s+(?:saat\s*:?\s*)?(\d{2}):(\d{2})(?::(\d{2}))?)?/);
   if (!d) return null;
   const iso = `${d[3]}-${d[2]}-${d[1]}T${d[4] ?? '12'}:${d[5] ?? '00'}:${d[6] ?? '00'}+03:00`;
   return Number.isNaN(Date.parse(iso)) ? null : new Date(iso).toISOString();
@@ -54,7 +55,9 @@ export function parseBankText(text: string): Parsed[] {
       const m3 = t.match(/(?:tarihinde|saatinde)\s+(.{2,40}?)\s+(?:isyerinden|isyerinde|'?(?:den|dan|de|da)\s)/);
       // "14:05'te MIGROS KADIKOY'dan 245,90 TL" / "14:05 MIGROS KADIKOY 245,90 TL"
       const m4 = t.match(/\d{2}:\d{2}(?::\d{2})?(?:'?(?:te|ta|de|da))?\s+(.{2,40}?)(?:'?(?:dan|den|tan|ten))?\s+-?\d{1,3}(?:\.\d{3})*,\d{2}\s*(?:tl|try)/);
-      const m = m1 ?? m3 ?? m4 ?? m2;
+      // Yapı Kredi: "0899 ile biten kartinizla CARREFOUR CARREFOURSA MER firmasindan 159,90 TL islem yapilmistir"
+      const m5 = t.match(/(?:kartiniz(?:la|dan)|kart ile)\s+(.{2,60}?)\s+(?:firmasindan|firmasinda|isyerinden)/);
+      const m = m5 ?? m1 ?? m3 ?? m4 ?? m2;
       if (m) merchant = (clean(raw.substr(m.index! + m[0].indexOf(m[1]), m[1].length)) ?? '')
         // "0899 ile biten kartınızdan TRENDYOL" → "TRENDYOL"
         .replace(/^.*?\b(?:kart|card)\S*\s+(?:ile\s+)?/i, '') || null;
