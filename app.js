@@ -1133,7 +1133,6 @@ function ShoppingScreen({ ctx, embedded, personal }) {
   const term = lower(q.trim());
   const matches = term ? pool.filter(i => lower(i.name).includes(term)).slice(0, 15) : [];
   const trips = personal ? [] : (rows.shopping_trips || []).slice().sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
-  const last = trips[0];
   const who = id => (id === uid ? 'Sen' : names[id] || 'Eşin');
 
   async function addOne(it) {
@@ -1153,12 +1152,13 @@ function ShoppingScreen({ ctx, embedded, personal }) {
   }
 
   return html`<div>
-    ${last && html`<div class="card hero">
-      <div class="muted">Son alışveriş</div>
-      <div class="big">${tl(last.total)}</div>
-      <div class="sub">${who(last.owner_id)} · ${fmtDate(last.date)} · ${(last.items || []).length} ürün</div>
-    </div>`}
-    <div class="card search"><input placeholder="Ürün ara veya ekle" value=${q} onInput=${e => setQ(e.target.value)} /></div>
+    <label class="search-label" for="shop-search">Ürün ara</label>
+    <div class="search-bar">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.6-3.6" /></svg>
+      <input id="shop-search" type="search" enterkeyhint="search" placeholder="Süt, ekmek, deterjan…" value=${q} onInput=${e => setQ(e.target.value)} />
+      ${q && html`<button class="search-clear" aria-label="Aramayı temizle" onClick=${() => setQ('')}>✕</button>`}
+    </div>
+    ${!term && html`<p class="search-hint">${inList.length ? `Listede ${inList.length} ürün var${checked.length ? `, ${checked.length} tanesi sepette` : ''}.` : 'Aradığın ürün yoksa yazıp listeye ekleyebilirsin.'}</p>`}
     ${term && html`<div class="card">
       ${matches.map(it => html`<button class="item" key=${it.id} onClick=${() => !it.in_list && addOne(it)}>
         <span class="grow title">${it.name}</span>
@@ -1775,11 +1775,11 @@ function HelpView() {
 // ---------- Kayıtlar: tiklenecek kayıtlar ----------
 
 const REC_GROUPS = [
-  ['own-exp', 'Şahsi harcama'],
-  ['shared-exp', 'Ortak harcama'],
-  ['own-inst', 'Şahsi taksit'],
-  ['shared-inst', 'Ortak taksit'],
-  ['fixed', 'Aylık ödeme'],
+  ['own-exp', 'Kendi harcamaların'],
+  ['shared-exp', 'Ortak harcamalar'],
+  ['own-inst', 'Kendi taksitlerin'],
+  ['shared-inst', 'Ortak taksitler'],
+  ['fixed', 'Aylık ödemeler'],
 ];
 
 /** Seçili ay için kayıt grupları. Yalnızca o aya ait kayıtlar gelir. */
@@ -1940,7 +1940,7 @@ const OzetGroup = ({ id, title, total, open, onToggle, children, sign = 'out', n
 function OzetItem({ ctx, m, it, table, kind, amt, open, onToggle, sign = 'out', status, onCardView }) {
   const { uid, names } = ctx;
   const paid = isPaid(it, m);
-  const payer = it.payer_id === uid ? 'sen' : names[it.payer_id] || 'eşin';
+  const paidBy = it.payer_id === uid ? 'sen ödedin' : `${names[it.payer_id] || 'eşin'} ödedi`;
   const started = kind === 'installment' ? it.first_month : kind === 'expense' ? it.date : it.created_at;
   return html`
     <div>
@@ -1950,7 +1950,7 @@ function OzetItem({ ctx, m, it, table, kind, amt, open, onToggle, sign = 'out', 
             kind === 'installment' && `${inst.remaining(it, m)} taksit kaldı`,
             // Kart ekranında hepsi kartla; ödeme şekli yazılmaz
             !onCardView && (onCardItem(it, table) ? 'kredi kartı' : 'nakit'),
-            it.shared && `ortak (${payer} ödedi)`,
+            it.shared && `ortak, ${paidBy}`,
             status && html`<${Chip} status=${status} />`,
           ].filter(Boolean).flatMap((x, i) => (i ? [' · ', x] : [x]))}</span></span>
         <span class=${'amt ' + signed(amt, sign === 'in').tone}>${signed(amt, sign === 'in').text}</span>
@@ -1982,6 +1982,7 @@ function OzetGroups({ ctx, m, view, focus }) {
   const sCur = settlementFor(rows, members, m);
   const cards = cardItems(rows, uid, m);
   const who = id => (id === uid ? 'Sen' : names[id] || 'Eşin');
+  const paidBy = id => (id === uid ? 'sen ödedin' : `${names[id] || 'eşin'} ödedi`);
   const toggleGroup = k => setGroupOpen({ ...groupOpen, [k]: !groupOpen[k] });
   // Tutarı 0 ve içi boş grup gösterilmez
   const g = (k, title, total, children, sign, empty, note) => (!Math.round((Number(total) || 0) * 100) && empty ? null
@@ -2001,22 +2002,22 @@ function OzetGroups({ ctx, m, view, focus }) {
   const cardKind = k => cards.filter(c => c.kind === k);
 
   if (view === 'kart') return html`<div class="ozet-groups">
-    ${g('kpay', 'Kart ödemesi (kullanılabilir bakiyeyi artırır)', b.cardAmt, html`<div class="row pad"><span>Bu ay yaptığın ödeme</span><b>${tl(b.cardAmt)}</b></div>`, 'in', true)}
-    ${g('kfixed', 'Aylık ödemelerden kartla', sumBy(cardKind('Her ay'), c => c.amount), renderItems(cardKind('Her ay').map(c => ({ ...c, key: itemKey('kfixed', c.it.id) })), x => (isPaid(x.it, m) ? SEEN : WAIT)), 'out', !cardKind('Her ay').length,
+    ${g('kpay', 'Bu ay karta yaptığın ödeme', b.cardAmt, html`<div class="row pad"><span>Kart borcundan düşer, limitin açılır</span><b>${tl(b.cardAmt)}</b></div>`, 'in', true)}
+    ${g('kfixed', 'Karttan çekilen aylık ödemeler', sumBy(cardKind('Her ay'), c => c.amount), renderItems(cardKind('Her ay').map(c => ({ ...c, key: itemKey('kfixed', c.it.id) })), x => (isPaid(x.it, m) ? SEEN : WAIT)), 'out', !cardKind('Her ay').length,
       (n => (n ? `${n} bekleniyor` : null))(cardKind('Her ay').filter(c => !isPaid(c.it, m)).length))}
-    ${g('kinst', 'Taksitlerden kartla', sumBy(cardKind('Taksit'), c => c.amount), renderItems(cardKind('Taksit').map(c => ({ ...c, key: itemKey('kinst', c.it.id) })), () => null), 'out', !cardKind('Taksit').length)}
-    ${g('kexp', 'Harcamalardan kartla', sumBy(cardKind('Harcama'), c => c.amount), renderItems(cardKind('Harcama').map(c => ({ ...c, key: itemKey('kexp', c.it.id) })), () => null), 'out', !cardKind('Harcama').length)}
+    ${g('kinst', 'Karttaki taksitler', sumBy(cardKind('Taksit'), c => c.amount), renderItems(cardKind('Taksit').map(c => ({ ...c, key: itemKey('kinst', c.it.id) })), () => null), 'out', !cardKind('Taksit').length)}
+    ${g('kexp', 'Kartla yapılan harcamalar', sumBy(cardKind('Harcama'), c => c.amount), renderItems(cardKind('Harcama').map(c => ({ ...c, key: itemKey('kexp', c.it.id) })), () => null), 'out', !cardKind('Harcama').length)}
     ${!cards.length && !b.cardAmt && html`<div class="card"><${Empty}>Bu ay kartla yapılan kayıt yok<//></div>`}
   </div>`;
 
   return html`<div class="ozet-groups">
     ${g('settle', 'Hesaplaşma', b.settleIn, html`
-      ${(sCur?.lines || []).map(l => html`<div class="row pad" key=${l.id}><span>${l.name}<small class="muted"> · ${l.kind} · ${who(l.payer)} ödedi</small></span><b>${tl(l.amount / 2)}</b></div>`)}
-      <div class="row pad"><span>${b.settleIn >= 0 ? 'Sana gelecek' : 'Sana gidecek'}</span><b class=${b.settleIn >= 0 ? 'pos' : 'warn'}>${tl(Math.abs(b.settleIn))}</b></div>
+      ${(sCur?.lines || []).map(l => html`<div class="row pad" key=${l.id}><span>${l.name}<small class="muted"> · ${lower(l.kind)}, ${paidBy(l.payer)} · payı</small></span><b>${tl(l.amount / 2)}</b></div>`)}
+      <div class="row pad"><span>${b.settleIn >= 0 ? `Gelecek para (${who(sCur?.from)} → sen)` : `Göndereceğin para (sen → ${who(sCur?.to)})`}</span><b class=${b.settleIn >= 0 ? 'pos' : 'warn'}>${tl(Math.abs(b.settleIn))}</b></div>
       <div class="row pad"><span>Durum</span><b class=${settleDone ? 'pos' : 'warn'}>${settleDone ? (b.settleIn < 0 ? 'Gönderildi ✓' : 'Geldi ✓') : b.settleIn < 0 ? 'Gönderilmedi' : 'Henüz gelmedi'}</b></div>`, 'auto', !sCur?.lines?.length,
       Math.abs(b.settleIn) >= 1 && !settleDone ? (b.settleIn < 0 ? 'ödenmedi' : 'gelmedi') : null)}
     ${g('direct', 'Ay içinde gönderilen ortak paylar', b.settle - b.settleIn, html`
-      ${(sCur?.sentDirect || []).map(l => html`<div class="row pad" key=${l.id}><span>${l.name}<small class="muted"> · ${who(l.payer)} ödedi · ${l.when}</small></span><b>${tl(l.debt)}</b></div>`)}`, 'auto', !(sCur?.sentDirect || []).length)}
+      ${(sCur?.sentDirect || []).map(l => html`<div class="row pad" key=${l.id}><span>${l.name}<small class="muted"> · ${paidBy(l.payer)} · ${l.when}</small></span><b>${tl(l.debt)}</b></div>`)}`, 'auto', !(sCur?.sentDirect || []).length)}
     ${g('card', 'Kredi kartı ödemesi', b.cardAmt, html`<div class="row pad"><span>Bu ay yaptığın kart ödemesi</span><b>${tl(b.cardAmt)}</b></div>`, 'out', true)}
     ${g('fixed', 'Aylık ödemeler', b.fixed, renderItems(itemsOf('fixed', b.items.fixed, 'fixed_payments', 'fixed')), 'out', !b.items.fixed.length, unpaidNote(b.items.fixed))}
     ${g('installment', 'Taksitler', b.installment, renderItems(itemsOf('installment', b.items.installment, 'installments', 'installment')), 'out', !b.items.installment.length, unpaidNote(b.items.installment))}
@@ -2073,8 +2074,8 @@ function CardPanel({ ctx, m, onLimit, onCard }) {
 /** Bu Ay'daki kategori grupları: ödenmemiş kaydı olan açık gelir */
 const recSub = (x, m, uid, names) => [
   x.kind === 'expense' ? fmtDate(x.it.date) : x.kind === 'installment' ? `${inst.remaining(x.it, m)} taksit kaldı` : 'her ay',
-  x.it.on_card ? 'kart' : 'nakit',
-  x.it.shared ? (x.it.payer_id === uid ? 'ortak · senin kartın' : `ortak · ${names[x.it.payer_id] || 'eşin'} kartı`) : null,
+  onCardItem(x.it, x.table) ? 'kartla' : 'nakit',
+  x.it.shared ? `ortak, ödeyen ${x.it.payer_id === uid ? 'sen' : names[x.it.payer_id] || 'eşin'}` : null,
 ].filter(Boolean).join(' · ');
 
 function CategoryGroups({ ctx, m, side, onToggle, onOpen }) {
@@ -2090,7 +2091,7 @@ function CategoryGroups({ ctx, m, side, onToggle, onOpen }) {
     ${groups.map(g => html`
       <div class="group" key=${g.id}>
         <button class="group-head fold" onClick=${() => setToggled({ ...toggled, [g.id]: !isOpen(g) })} aria-expanded=${isOpen(g)}>
-          <span><span class=${'chev' + (isOpen(g) ? ' open' : '')}>›</span>${g.title}${g.hasUnpaid ? ' · ödenmemiş var' : ''}</span>
+          <span><span class=${'chev' + (isOpen(g) ? ' open' : '')}>›</span>${g.title}${g.hasUnpaid && html`<small class="g-note">ödenmemiş var</small>`}</span>
           <span>${tl(g.total)}</span>
         </button>
         ${isOpen(g) && html`<div class="card">

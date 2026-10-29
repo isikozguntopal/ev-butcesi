@@ -558,6 +558,26 @@
     .card > :nth-child(n+6) > .item, .card > .item:nth-child(n+6), .ozet-groups .group:nth-child(n+6), .screen > :nth-child(n+7) { animation-delay: 250ms; }
     @keyframes rise { from { opacity: 0; transform: translateY(10px); } }
 
+    /* Grup başlığı: uzun ad sarılır, tutar her zaman tek satırda kalır */
+    .group-head { align-items: center; gap: 10px; }
+    .group-head > span:first-child { flex: 1; min-width: 0; }
+    .g-total { flex: none; white-space: nowrap; }
+
+    /* Yürüyen hayvanlar alt menünün ve ortadaki Özet düğmesinin üstünden geçsin */
+    .walker { bottom: calc(env(safe-area-inset-bottom) + 98px); z-index: 11; }
+
+    /* Market arama çubuğu */
+    .search-label { display: block; font-size: 13px; font-weight: 650; color: var(--muted); margin: 6px 6px 6px; letter-spacing: .02em; }
+    .search-bar { display: flex; align-items: center; gap: 10px; padding: 0 14px; height: 52px; border-radius: 18px;
+      background: var(--card); border: 1px solid var(--rim); box-shadow: var(--shadow); transition: border-color .2s ease, box-shadow .2s ease; }
+    .search-bar:focus-within { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft), var(--shadow); }
+    .search-bar svg { width: 20px; height: 20px; flex: none; fill: none; stroke: var(--accent); stroke-width: 2.4; stroke-linecap: round; }
+    .search-bar input { flex: 1; min-width: 0; border: 0; background: none; outline: none; font-size: 17px; padding: 0; -webkit-appearance: none; appearance: none; }
+    .search-bar input::-webkit-search-cancel-button { display: none; }
+    .search-clear { width: 26px; height: 26px; border-radius: 50%; background: var(--fill); color: var(--muted); font-size: 12px; flex: none; }
+    .search-hint { font-size: 13px; color: var(--muted); margin: 8px 8px 4px; }
+    .search-bar + .card { margin-top: 10px; }
+
     /* Kayıt adı üstte, ayrıntı (ödeme şekli, ortak, durum) altında */
     .item > .grow > .title, .item > .grow > .sub { display: block; }
     .item > .grow > .title { font-weight: 600; }
