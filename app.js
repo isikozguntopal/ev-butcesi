@@ -2442,6 +2442,7 @@ function BankInboxSheet({ ctx, events, onNew, onClose }) {
         <div class="modal-kind">${BANK_KIND[ev.kind]}</div>
         <div class=${'modal-amount ' + (isIn ? 'pos' : 'neg')}>${isIn ? '+' : '−'} ${tl(ev.amount)}</div>
         ${ev.merchant && html`<div class="modal-who">${ev.merchant}</div>`}
+        ${ev.merchant === 'Günlük özetle fark' && html`<div class="muted small">Sabahki bakiye özeti, gün içinde gelen bildirimlerle tutmadı. Bu tutarda bir hareket kaçmış olabilir: bir kayıtla eşleştir, harcama olarak ekle ya da yok say.</div>`}
         <div class="muted">${whenShort(ev.occurred_at)}</div>
         ${fin.bank_balance != null && html`<div class="modal-bal"><span>Güncel bakiye<small class="muted"> · ${whenShort(fin.bank_balance_at)}</small></span><b>${tl(fin.bank_balance)}</b></div>`}
         <div class="modal-actions">

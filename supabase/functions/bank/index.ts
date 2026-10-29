@@ -20,7 +20,8 @@ webpush.setVapidDetails(
 const KINDS = ['card', 'balance', 'in', 'out'];
 const tl = (v: number) => new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY' }).format(v);
 
-type Event = { kind: string; amount: number; merchant?: string | null; occurred_at?: string | null; msg_id: string; subject?: string };
+type Event = { kind: string; amount: number; merchant?: string | null; occurred_at?: string | null; msg_id: string; subject?: string; daily?: boolean };
+const GAP = 'Günlük özetle fark';
 type Text = { text: string; id?: string; at?: string };
 
 async function sha(s: string) {
@@ -36,7 +37,9 @@ async function fromTexts(texts: Text[]): Promise<Event[]> {
     if (!text.trim()) continue;
     const base = t.id ? String(t.id) : await sha(text);
     for (const p of parseBankText(text)) {
-      out.push({ ...p, occurred_at: p.occurred_at ?? t.at ?? null, msg_id: `${base}:${p.kind}`, subject: text.slice(0, 120) });
+      // Günlük özet bir önceki günün sonunu bildirir ama ondan önce gelen her şeyi kapsar: geldiği an olarak kaydet
+      const at = p.daily ? (t.at ?? new Date().toISOString()) : p.occurred_at ?? t.at ?? null;
+      out.push({ ...p, occurred_at: at, msg_id: `${base}:${p.kind}`, subject: text.slice(0, 120) });
     }
   }
   return out;
@@ -97,15 +100,39 @@ Deno.serve(async req => {
     }
   }
 
-  // Yeni kart harcamalarını telefona bildir (tercihinde kapatmadıysa)
+  // Günlük özet kontrolü: önceki bakiye + aradaki giriş/çıkışlar özetteki bakiyeyi tutmuyorsa
+  // kaçan (otomasyonun yakalamadığı) bir hareket vardır; farkı onaylanacak hareket olarak ekle
+  const gaps: Record<string, unknown>[] = [];
+  for (const d of fresh.filter(r => r.kind === 'balance' && events.find(e => e.msg_id === r.msg_id)?.daily)) {
+    const { data: prev } = await admin.from('bank_events').select('amount, created_at').eq('owner_id', uid).eq('kind', 'balance')
+      .neq('id', d.id).lt('created_at', d.created_at).order('created_at', { ascending: false }).limit(1).maybeSingle();
+    if (!prev) continue;
+    const { data: moves } = await admin.from('bank_events').select('kind, amount, msg_id').eq('owner_id', uid).in('kind', ['in', 'out'])
+      .gt('created_at', prev.created_at).lt('created_at', d.created_at);
+    const net = (moves ?? []).filter(m => !m.msg_id.endsWith(':gap'))
+      .reduce((s, m) => s + (m.kind === 'in' ? 1 : -1) * Number(m.amount), 0);
+    const diff = Math.round((Number(d.amount) - Number(prev.amount) - net) * 100) / 100;
+    if (Math.abs(diff) < 1) continue;
+    gaps.push({
+      household_id: member.household_id, owner_id: uid, kind: diff > 0 ? 'in' : 'out', amount: Math.abs(diff),
+      merchant: GAP, occurred_at: d.occurred_at, msg_id: d.msg_id.replace(/:balance$/, ':gap'), status: 'pending',
+      subject: `Günlük özet ${tl(Number(d.amount))}; uygulamanın beklediği ${tl(Number(prev.amount) + net)}`,
+    });
+  }
+  if (gaps.length) await admin.from('bank_events').upsert(gaps, { onConflict: 'owner_id,msg_id', ignoreDuplicates: true });
+
+  // Yeni kart harcamalarını ve günlük özetteki farkı telefona bildir (tercihinde kapatmadıysa)
   const cards = fresh.filter(r => r.kind === 'card');
-  if (cards.length && (member.notify_prefs ?? {}).bank !== false) {
+  if ((cards.length || gaps.length) && (member.notify_prefs ?? {}).bank !== false) {
     const { data: subs } = await admin.from('push_subscriptions').select('*').eq('user_id', uid);
     const one = cards[0];
-    const payload = JSON.stringify({
+    const payload = JSON.stringify(cards.length ? {
       title: '🔔 Yeni kart harcaması',
       body: cards.length === 1 ? `${tl(one.amount)}${one.merchant ? ` · ${one.merchant}` : ''} · uygulamada onayla`
         : `${cards.length} yeni harcama · uygulamada onayla`,
+    } : {
+      title: '🔎 Bankada kaçan bir hareket var',
+      body: `Günlük özette ${tl(Number(gaps[0].amount))} ${gaps[0].kind === 'in' ? 'giriş' : 'çıkış'} farkı · uygulamada kontrol et`,
     });
     await Promise.all((subs ?? []).map(async (s: { id: string; endpoint: string; p256dh: string; auth: string }) => {
       try {

@@ -1,7 +1,9 @@
 // Banka SMS'i ya da e-postası metninden olay çıkarır: kart harcaması, para girişi/çıkışı, güncel bakiye.
 // SMS'ler Türkçe karaktersiz gelir ("hesabiniza", "gelmistir"); karşılaştırma harf sadeleştirilerek yapılır.
 
-export type Parsed = { kind: 'card' | 'balance' | 'in' | 'out'; amount: number; merchant: string | null; occurred_at: string | null };
+export type Parsed = { kind: 'card' | 'balance' | 'in' | 'out'; amount: number; merchant: string | null; occurred_at: string | null;
+  /** Sabah gelen günlük özet ("28/10/2026 tarihli guncel bakiyesi"): gün sonu bakiyesi, kontrol için kullanılır */
+  daily?: boolean };
 
 const MAP: Record<string, string> = {
   'İ': 'i', 'I': 'i', 'ı': 'i', 'Ş': 's', 'ş': 's', 'Ğ': 'g', 'ğ': 'g', 'Ü': 'u', 'ü': 'u', 'Ö': 'o', 'ö': 'o', 'Ç': 'c', 'ç': 'c',
@@ -69,6 +71,6 @@ export function parseBankText(text: string): Parsed[] {
     if (cardPay) merchant = 'Kredi kartı ödemesi';
     out.push({ kind, amount: num(first[1]), merchant, occurred_at: when });
   }
-  if (bal) out.push({ kind: 'balance', amount: num(bal[1]), merchant: null, occurred_at: when });
+  if (bal) out.push({ kind: 'balance', amount: num(bal[1]), merchant: null, occurred_at: when, ...(/tarihli guncel bakiye/.test(t) && !kind ? { daily: true } : {}) });
   return out;
 }
