@@ -669,7 +669,8 @@ async function saveCardPayment(ctx, month, paid) {
     : await actions.add('card_payments', { ...row, month, owner_id: uid });
   if (ok !== false && paid > 0) {
     const key = paidKey(month, uid);
-    for (const { it, table } of cardItems(rows, uid, month)) {
+    // Aylık ödemeler kartta görülünce (banka SMS'i eşleşince) ödendi olur; kart ödemesi onları işaretlemez
+    for (const { it, table } of cardItems(rows, uid, month).filter(c => c.table !== 'fixed_payments')) {
       if (!(it.paid_months || []).includes(key)) await actions.patch(table, it.id, { paid_months: [...(it.paid_months || []), key] });
     }
     if (!card) celebrate('Kart ödemesi girildi!');
@@ -1877,13 +1878,13 @@ function cardUsedNowFor(fin, rows, uid) {
 }
 
 /** Açılır grup: başlık ve toplam; dokununca aşağı açılır */
-const OzetGroup = ({ id, title, total, open, onToggle, children, sign = 'out' }) => {
+const OzetGroup = ({ id, title, total, open, onToggle, children, sign = 'out', note }) => {
   const v = Number(total) || 0;
   const plus = sign === 'in' || (sign === 'auto' && v >= 0);
   return html`
     <div class="group" id=${id ? `og-${id}` : undefined}>
       <button class="group-head fold" onClick=${onToggle} aria-expanded=${open}>
-        <span><span class=${'chev' + (open ? ' open' : '')}>›</span>${title}</span>
+        <span><span class=${'chev' + (open ? ' open' : '')}>›</span>${title}${note && html`<small class="g-note">${note}</small>`}</span>
         <span class=${'g-total ' + signed(v, plus).tone}>${signed(v, plus).text}</span>
       </button>
       ${open && html`<div class="card">${children}</div>`}
@@ -1891,7 +1892,7 @@ const OzetGroup = ({ id, title, total, open, onToggle, children, sign = 'out' })
 };
 
 /** Kayıt satırı: dokununca hemen altında detay açılır */
-function OzetItem({ ctx, m, it, table, kind, amt, open, onToggle, sign = 'out' }) {
+function OzetItem({ ctx, m, it, table, kind, amt, open, onToggle, sign = 'out', status }) {
   const { uid, names } = ctx;
   const paid = isPaid(it, m);
   const payer = it.payer_id === uid ? 'sen' : names[it.payer_id] || 'eşin';
@@ -1900,14 +1901,14 @@ function OzetItem({ ctx, m, it, table, kind, amt, open, onToggle, sign = 'out' }
     <div>
       <button class="item" onClick=${onToggle}>
         <span class="grow"><span class="title">${it.name}</span>
-          <span class="sub">${kind === 'installment' ? `${inst.remaining(it, m)} taksit kaldı · ` : ''}${it.on_card ? 'kredi kartı' : 'nakit'}${it.shared ? ` · ortak (${payer} ödedi)` : ''}</span></span>
+          <span class="sub">${kind === 'installment' ? `${inst.remaining(it, m)} taksit kaldı · ` : ''}${onCardItem(it, table) ? 'kredi kartı' : 'nakit'}${it.shared ? ` · ortak (${payer} ödedi)` : ''}${status && html` · <b class=${status.tone}>${status.text}</b>`}</span></span>
         <span class=${'amt ' + signed(amt, sign === 'in').tone}>${signed(amt, sign === 'in').text}</span>
       </button>
       ${open && html`<div class="detail-inline">
         <div class="row pad"><span>Ne zaman açıldı</span><b>${fmtDate(started)}</b></div>
         ${kind === 'installment' && html`<div class="row pad"><span>Kaç ay kaldı</span><b>${inst.remaining(it, m)} / ${inst.total(it)} taksit</b></div>`}
         ${kind === 'installment' && html`<div class="row pad"><span>Son taksit</span><b>${shortMonth(inst.last(it))}</b></div>`}
-        <div class="row pad"><span>${monthName(m)}</span><b class=${paid ? 'pos' : 'warn'}>${paid ? 'Ödendi ✓' : 'Ödenmedi'}</b></div>
+        ${status !== null && html`<div class="row pad"><span>${monthName(m)}</span><b class=${(status || {}).tone || (paid ? 'pos' : 'warn')}>${status ? status.text : paid ? 'Ödendi ✓' : 'Ödenmedi'}</b></div>`}
       </div>`}
     </div>`;
 }
@@ -1932,32 +1933,43 @@ function OzetGroups({ ctx, m, view, focus }) {
   const who = id => (id === uid ? 'Sen' : names[id] || 'Eşin');
   const toggleGroup = k => setGroupOpen({ ...groupOpen, [k]: !groupOpen[k] });
   // Tutarı 0 ve içi boş grup gösterilmez
-  const g = (k, title, total, children, sign, empty) => (!Math.round((Number(total) || 0) * 100) && empty ? null
-    : html`<${OzetGroup} id=${k} sign=${sign} title=${title} total=${total} open=${!!groupOpen[k]} onToggle=${() => toggleGroup(k)}>${children}<//>`);
+  const g = (k, title, total, children, sign, empty, note) => (!Math.round((Number(total) || 0) * 100) && empty ? null
+    : html`<${OzetGroup} id=${k} sign=${sign} title=${title} total=${total} note=${note} open=${!!groupOpen[k]} onToggle=${() => toggleGroup(k)}>${children}<//>`);
+  // Ödendi bilgisi: nakit kalemler bankada çıkınca, kartla aylık ödemeler kartta görülünce (banka SMS'i eşleşince) işaretlenir.
+  // Kartla taksitler ve kart harcamaları zaten kartta olduğundan etiket almaz.
+  const PAID = { text: 'ödendi ✓', tone: 'pos' }, UNPAID = { text: 'ödenmedi', tone: 'warn' };
+  const SEEN = { text: 'kartta görüldü ✓', tone: 'pos' }, WAIT = { text: 'kartta bekleniyor', tone: 'warn' };
+  const cashStatus = x => (isPaid(x.it, m) ? PAID : UNPAID);
+  const unpaidNote = list => { const n = list.filter(x => !isPaid(x.it, m)).length; return n ? `${n} ödenmedi` : null; };
   const itemKey = (k, id) => `${k}:${id}`;
   const itemsOf = (k, list, table, kind) => list.map(x => ({ ...x, table, kind, key: itemKey(k, x.it.id) }));
-  const renderItems = list => list.map(x => html`<${OzetItem} key=${x.key} ctx=${ctx} m=${m} it=${x.it} table=${x.table}
-    kind=${x.kind} amt=${x.amt ?? x.amount} sign=${x.sign || 'out'} open=${itemOpen === x.key} onToggle=${() => setItemOpen(itemOpen === x.key ? null : x.key)} />`);
+  const renderItems = (list, status = cashStatus) => list.map(x => html`<${OzetItem} key=${x.key} ctx=${ctx} m=${m} it=${x.it} table=${x.table}
+    kind=${x.kind} amt=${x.amt ?? x.amount} sign=${x.sign || 'out'} status=${status && status(x)} open=${itemOpen === x.key} onToggle=${() => setItemOpen(itemOpen === x.key ? null : x.key)} />`);
+  const rec = (rows.settlements || []).find(x => x.month === m);
+  const settleDone = b.settleIn < 0 ? !!rec?.sent_at : !!rec?.received_at;
   const cardKind = k => cards.filter(c => c.kind === k);
 
   if (view === 'kart') return html`<div class="ozet-groups">
     ${g('kpay', 'Kart ödemesi (kullanılabilir bakiyeyi artırır)', b.cardAmt, html`<div class="row pad"><span>Bu ay yaptığın ödeme</span><b>${tl(b.cardAmt)}</b></div>`, 'in', true)}
-    ${g('kfixed', 'Aylık ödemelerden kartla', sumBy(cardKind('Her ay'), c => c.amount), renderItems(cardKind('Her ay').map(c => ({ ...c, key: itemKey('kfixed', c.it.id) }))), 'out', !cardKind('Her ay').length)}
-    ${g('kinst', 'Taksitlerden kartla', sumBy(cardKind('Taksit'), c => c.amount), renderItems(cardKind('Taksit').map(c => ({ ...c, key: itemKey('kinst', c.it.id) }))), 'out', !cardKind('Taksit').length)}
-    ${g('kexp', 'Harcamalardan kartla', sumBy(cardKind('Harcama'), c => c.amount), renderItems(cardKind('Harcama').map(c => ({ ...c, key: itemKey('kexp', c.it.id) }))), 'out', !cardKind('Harcama').length)}
+    ${g('kfixed', 'Aylık ödemelerden kartla', sumBy(cardKind('Her ay'), c => c.amount), renderItems(cardKind('Her ay').map(c => ({ ...c, key: itemKey('kfixed', c.it.id) })), x => (isPaid(x.it, m) ? SEEN : WAIT)), 'out', !cardKind('Her ay').length,
+      (n => (n ? `${n} bekleniyor` : null))(cardKind('Her ay').filter(c => !isPaid(c.it, m)).length))}
+    ${g('kinst', 'Taksitlerden kartla', sumBy(cardKind('Taksit'), c => c.amount), renderItems(cardKind('Taksit').map(c => ({ ...c, key: itemKey('kinst', c.it.id) })), () => null), 'out', !cardKind('Taksit').length)}
+    ${g('kexp', 'Harcamalardan kartla', sumBy(cardKind('Harcama'), c => c.amount), renderItems(cardKind('Harcama').map(c => ({ ...c, key: itemKey('kexp', c.it.id) })), () => null), 'out', !cardKind('Harcama').length)}
     ${!cards.length && !b.cardAmt && html`<div class="card"><${Empty}>Bu ay kartla yapılan kayıt yok<//></div>`}
   </div>`;
 
   return html`<div class="ozet-groups">
     ${g('settle', 'Hesaplaşma', b.settleIn, html`
       ${(sCur?.lines || []).map(l => html`<div class="row pad" key=${l.id}><span>${l.name}<small class="muted"> · ${l.kind} · ${who(l.payer)} ödedi</small></span><b>${tl(l.amount / 2)}</b></div>`)}
-      <div class="row pad"><span>${b.settleIn >= 0 ? 'Sana gelecek' : 'Sana gidecek'}</span><b class=${b.settleIn >= 0 ? 'pos' : 'warn'}>${tl(Math.abs(b.settleIn))}</b></div>`, 'auto', !sCur?.lines?.length)}
+      <div class="row pad"><span>${b.settleIn >= 0 ? 'Sana gelecek' : 'Sana gidecek'}</span><b class=${b.settleIn >= 0 ? 'pos' : 'warn'}>${tl(Math.abs(b.settleIn))}</b></div>
+      <div class="row pad"><span>Durum</span><b class=${settleDone ? 'pos' : 'warn'}>${settleDone ? (b.settleIn < 0 ? 'Gönderildi ✓' : 'Geldi ✓') : b.settleIn < 0 ? 'Gönderilmedi' : 'Henüz gelmedi'}</b></div>`, 'auto', !sCur?.lines?.length,
+      Math.abs(b.settleIn) >= 1 && !settleDone ? (b.settleIn < 0 ? 'ödenmedi' : 'gelmedi') : null)}
     ${g('direct', 'Ay içinde gönderilen ortak paylar', b.settle - b.settleIn, html`
       ${(sCur?.sentDirect || []).map(l => html`<div class="row pad" key=${l.id}><span>${l.name}<small class="muted"> · ${who(l.payer)} ödedi · ${l.when}</small></span><b>${tl(l.debt)}</b></div>`)}`, 'auto', !(sCur?.sentDirect || []).length)}
     ${g('card', 'Kredi kartı ödemesi', b.cardAmt, html`<div class="row pad"><span>Bu ay yaptığın kart ödemesi</span><b>${tl(b.cardAmt)}</b></div>`, 'out', true)}
-    ${g('fixed', 'Aylık ödemeler', b.fixed, renderItems(itemsOf('fixed', b.items.fixed, 'fixed_payments', 'fixed')), 'out', !b.items.fixed.length)}
-    ${g('installment', 'Taksitler', b.installment, renderItems(itemsOf('installment', b.items.installment, 'installments', 'installment')), 'out', !b.items.installment.length)}
-    ${g('expense', 'Harcamalar', b.expense, renderItems(itemsOf('expense', b.items.expense, 'expenses', 'expense')), 'out', !b.items.expense.length)}
+    ${g('fixed', 'Aylık ödemeler', b.fixed, renderItems(itemsOf('fixed', b.items.fixed, 'fixed_payments', 'fixed')), 'out', !b.items.fixed.length, unpaidNote(b.items.fixed))}
+    ${g('installment', 'Taksitler', b.installment, renderItems(itemsOf('installment', b.items.installment, 'installments', 'installment')), 'out', !b.items.installment.length, unpaidNote(b.items.installment))}
+    ${g('expense', 'Harcamalar', b.expense, renderItems(itemsOf('expense', b.items.expense, 'expenses', 'expense')), 'out', !b.items.expense.length, unpaidNote(b.items.expense))}
   </div>`;
 }
 
@@ -2367,17 +2379,27 @@ function matchCandidates(ctx, ev) {
   }).filter(Boolean);
   if (ev.kind === 'in') return settles;
   const cash = ev.kind === 'out';
+  // Daha önce aynı işyerinden gelen hareket hangi kayıtla eşleştirildiyse o kayıt öne çıkar (ör. her ay YOUTUBE → "Youtube")
+  const key = merchantKey(ev.merchant);
+  const learned = new Set(key ? (rows.bank_events || []).filter(e => e.id !== ev.id && e.matched_id && merchantKey(e.merchant) === key).map(e => e.matched_id) : []);
   const list = [
     ...rows.expenses.filter(e => e.payer_id === uid && Number(e.amount) > 0 && e.date >= from && e.date <= to
       && (cash ? !e.on_card && !isPaid(e, mk(e.date), uid) : true))
       .map(it => ({ it, table: 'expenses', kind: 'Harcama', amount: Number(it.amount), sub: fmtDate(it.date) })),
-    ...rows.fixed_payments.filter(f => f.payer_id === uid && (cash ? !onCardItem(f, 'fixed_payments') && !isPaid(f, m, uid) : true))
+    ...rows.fixed_payments.filter(f => f.payer_id === uid && !isPaid(f, m, uid) && (cash ? !onCardItem(f, 'fixed_payments') : true))
       .map(it => ({ it, table: 'fixed_payments', kind: 'Her ay', amount: Number(it.amount), sub: monthName(m) })),
-    ...rows.installments.filter(i => i.payer_id === uid && inst.active(i, m) && (cash ? !onCardItem(i) && !isPaid(i, m, uid) : true))
+    ...rows.installments.filter(i => i.payer_id === uid && inst.active(i, m) && (cash ? !onCardItem(i) && !isPaid(i, m, uid) : !isPaid(i, m, uid)))
       .map(it => ({ it, table: 'installments', kind: 'Taksit', amount: Number(it.monthly_amount), sub: `${inst.remaining(it, m)} taksit kaldı` })),
   ].filter(c => !used.has(c.it.id));
-  return [...(cash ? settles : []), ...list].sort((a, b) => Math.abs(a.amount - ev.amount) - Math.abs(b.amount - ev.amount)).slice(0, 15);
+  const words = lower(ev.merchant || '').split(/[^a-zçğıöşü0-9]+/).filter(w => w.length >= 3);
+  const named = c => words.some(w => lower(c.it.name || '').split(/[^a-zçğıöşü0-9]+/).includes(w));
+  // Öneri gücü: 3 = daha önce bu işyeriyle eşleştirildi, 2 = adı işyerinde geçiyor, 1 = tutar birebir aynı
+  const score = c => (learned.has(c.it.id) ? 3 : named(c) ? 2 : Math.abs(c.amount - ev.amount) < 0.01 ? 1 : 0);
+  return [...(cash ? settles : []), ...list].map(c => ({ ...c, score: score(c) }))
+    .sort((a, b) => b.score - a.score || Math.abs(a.amount - ev.amount) - Math.abs(b.amount - ev.amount)).slice(0, 15);
 }
+/** İşyeri adının sabit kısmı: harf dışını at, ilk 14 harf ("YOUTUBE GOOGLE 0412" → "youtubegoogle") */
+const merchantKey = s => (s ? lower(s).replace(/[^a-zçğıöşü]/g, '').slice(0, 14) : '');
 
 const BANK_KIND = { card: '💳 Kart harcaması', out: '↗️ Giden para', in: '↙️ Gelen para' };
 
@@ -2409,9 +2431,10 @@ function BankInboxSheet({ ctx, events, onNew, onClose }) {
       p.date = day;
       if (c.it.pay_date) p.pay_date = c.it.pay_date === c.it.date ? day : settleDay(day, cutDayOf(ctx.members, c.it.payer_id));
     }
-    if (ev.kind === 'card') {
-      if (c.table === 'expenses') p.on_card = true;
-    } else {
+    if (ev.kind === 'card' && c.table === 'expenses') p.on_card = true;
+    else {
+      // Kartta görülen aylık ödeme kartla ödeniyor demektir
+      if (ev.kind === 'card' && c.table === 'fixed_payments' && !c.it.on_card) p.on_card = true;
       // Nakit ödeme yapıldı: kaydı "ödendi" işaretle
       const key = paidKey(mk(day), ctx.uid);
       const pm = c.it.paid_months || [];
@@ -2423,6 +2446,20 @@ function BankInboxSheet({ ctx, events, onNew, onClose }) {
   }
 
   const cands = open ? matchCandidates(ctx, ev) : [];
+  const top = !open ? matchCandidates(ctx, ev).find(c => c.score > 0) : null;
+  // Aylık ödemelerde yoksa: bu hareketten yeni aylık ödeme aç, bu ay ödendi say; gelecek ay aynı işyeri bununla eşleşir
+  async function addFixed() {
+    const name = prompt('Aylık ödemenin adı', ev.merchant || '');
+    if (name == null || !name.trim()) return;
+    const id = crypto.randomUUID ? crypto.randomUUID() : undefined;
+    const ok = await actions.add('fixed_payments', {
+      ...(id ? { id } : {}), name: name.trim(), amount: ev.amount, payer_id: ctx.uid, shared: false, split: 'half', category: 'Diğer',
+      on_card: ev.kind === 'card', paid_months: [paidKey(mk(localDay(ev.occurred_at)), ctx.uid)],
+    });
+    if (ok === false) return;
+    await done(ev, { status: 'matched', matched_table: 'fixed_payments', matched_id: id ?? null });
+    celebrate('Aylık ödeme eklendi!');
+  }
   const isIn = ev.kind === 'in';
   const isCardPay = ev.kind === 'out' && ev.merchant === 'Kredi kartı ödemesi';
   async function cardPay() {
@@ -2445,10 +2482,16 @@ function BankInboxSheet({ ctx, events, onNew, onClose }) {
         ${ev.merchant === 'Günlük özetle fark' && html`<div class="muted small">Sabahki bakiye özeti, gün içinde gelen bildirimlerle tutmadı. Bu tutarda bir hareket kaçmış olabilir: bir kayıtla eşleştir, harcama olarak ekle ya da yok say.</div>`}
         <div class="muted">${whenShort(ev.occurred_at)}</div>
         ${fin.bank_balance != null && html`<div class="modal-bal"><span>Güncel bakiye<small class="muted"> · ${whenShort(fin.bank_balance_at)}</small></span><b>${tl(fin.bank_balance)}</b></div>`}
+        ${top && !isCardPay && html`<div class="suggest">
+          <div class="muted small">${top.score === 3 ? 'Geçen sefer bu işyerini bununla eşleştirdin' : top.score === 2 ? 'İşyeri adı bu kayıtla uyuşuyor' : 'Tutarı birebir aynı'}</div>
+          <div class="suggest-row"><span><b>${top.it.name}</b><small class="muted"> · ${top.kind}</small></span><b>${tl(top.amount)}</b></div>
+          <button class="primary" onClick=${() => match(top)}>✓ Doğru, eşleştir</button>
+        </div>`}
         <div class="modal-actions">
           ${isCardPay && html`<button class="primary" onClick=${cardPay}>💳 Kart ödemesi olarak kaydet</button>`}
-          <button class=${isCardPay ? 'primary ghost' : 'primary'} onClick=${() => setOpen(!open)}>🔗 ${isIn ? 'Hesaplaşma geldi' : 'Bir kayıtla eşleştir'}</button>
+          <button class=${isCardPay || top ? 'primary ghost' : 'primary'} onClick=${() => setOpen(!open)}>🔗 ${isIn ? 'Hesaplaşma geldi' : top ? 'Hayır, başka bir kayıtla eşleştir' : 'Bir kayıtla eşleştir'}</button>
           ${!isIn && html`<button class="primary ghost" onClick=${() => onNew(ev)}>+ ${ev.kind === 'card' ? 'Yeni harcama olarak ekle' : 'Harcama olarak ekle'}</button>`}
+          ${!isIn && !isCardPay && html`<button class="primary ghost" onClick=${addFixed}>🔁 Yeni aylık ödeme olarak ekle</button>`}
           <button class="link" onClick=${() => done(ev, { status: 'ignored' })}>${ev.kind === 'card' ? 'Yok say' : ev.kind === 'out' ? 'Kendi hesabıma gönderdim · yok say' : 'Kendi hesabımdan geldi · yok say'}</button>
         </div>
         ${open && html`<div class="detail-inline modal-list">
