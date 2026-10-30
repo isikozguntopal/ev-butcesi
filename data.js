@@ -180,20 +180,58 @@ function monthKey(offset) {
 
 /** Tamamen uydurma isim ve tutarlarla dolu bir aile */
 function sampleData() {
-  const U = DEMO_UID, H = 'sample-household', now = new Date().toISOString(), m = monthKey(0);
+  const U = DEMO_UID, P = 'demo-partner', H = 'sample-household', now = new Date().toISOString(), m = monthKey(0), prev = monthKey(-1);
   let n = 0;
   const id = () => `s${++n}`;
   const own = { owner_id: U, payer_id: U, household_id: H, created_at: now };
+  const his = { owner_id: P, payer_id: P, household_id: H, created_at: now };
   const day = d => `${m}-${pad(Math.min(d, new Date().getDate()))}`;
+  const today = day(31);
+  const at = (date, hm = '12:00') => new Date(`${date}T${hm}:00+03:00`).toISOString();
+  const ids = { netflix: 'f-netflix', spor: 'f-spor', spotify: 'f-spotify' };
+  // Banka SMS'lerinden gelmiş gibi hareketler: abonelikler iki ayda tekrar eder, biri bekliyor
+  const ev = (kind, amount, merchant, date, extra = {}) => ({
+    id: id(), household_id: H, owner_id: U, kind, amount, merchant, occurred_at: at(date, extra.hm || '12:00'),
+    msg_id: `m${n}`, subject: null, status: 'added', matched_table: null, matched_id: null, created_at: at(date, extra.hm || '12:00'), ...extra,
+  });
   const listed = ['Domates', 'Maydanoz', 'Süt', 'Yumurta', 'Çamaşır deterjanı', 'Tuvalet kağıdı', 'Ekmek', 'Muz'];
   return {
     households: [{ id: H, name: 'Örnek Aile', invite_code: 'ORNEK', created_at: now }],
-    members: [{ user_id: U, household_id: H, display_name: 'Ayşe', created_at: now }],
-    finances: [{ user_id: U, income: 70000, savings_tl: 45000, usd_amount: 1200, usd_rate: 41.5, eur_amount: 300, gold_grams: 10 }],
+    members: [
+      { user_id: U, household_id: H, display_name: 'Ayşe', created_at: now, notify_prefs: { cut_day: 25, bank_source: 'sms' } },
+      { user_id: P, household_id: H, display_name: 'Mehmet', created_at: now, notify_prefs: { cut_day: 20 } },
+    ],
+    finances: [{
+      user_id: U, income: 70000, savings_tl: 45000, usd_amount: 1200, usd_rate: 41.5, eur_amount: 300, gold_grams: 10,
+      card_limit: 60000, card_used: 23450, card_debt: 18000, card_used_at: today,
+      bank_balance: 49830, bank_balance_at: at(today, '09:00'),
+    }],
     card_payments: [{ id: id(), household_id: H, owner_id: U, month: m, amount: 8400, includes_installments: true, created_at: now }],
-    settlements: [],
+    settlements: [{ id: id(), household_id: H, month: prev, from_id: P, to_id: U, amount: 6150, sent_at: at(`${m}-05`), sent_by: P, received_at: at(`${m}-05`, '18:00'), received_by: U, log: [], created_at: now }],
+    goals: [
+      { id: id(), household_id: H, owner_id: U, name: 'Tatil fonu', target: 30000, saved: 12500, shared: true, created_at: now },
+      { id: id(), household_id: H, owner_id: P, name: 'Yeni koltuk', target: 18000, saved: 15200, shared: true, created_at: now },
+      { id: id(), household_id: H, owner_id: U, name: 'Yeni telefon', target: 25000, saved: 8000, shared: false, created_at: now },
+    ],
+    shopping_trips: [
+      { id: id(), household_id: H, owner_id: U, date: day(20), total: 2340, items: ['Domates', 'Peynir', 'Zeytin', 'Makarna', 'Deterjan'], created_at: at(day(20)) },
+      { id: id(), household_id: H, owner_id: P, date: `${prev}-24`, total: 1875.5, items: ['Süt', 'Ekmek', 'Yumurta', 'Elma'], created_at: at(`${prev}-24`) },
+    ],
+    bank_events: [
+      ev('card', 229.99, 'NETFLIX.COM', `${prev}-12`, { status: 'matched', matched_table: 'fixed_payments', matched_id: ids.netflix }),
+      ev('card', 229.99, 'NETFLIX.COM', day(12), { status: 'matched', matched_table: 'fixed_payments', matched_id: ids.netflix }),
+      ev('card', 1200, 'MACFIT ISTANBUL', `${prev}-03`, { status: 'matched', matched_table: 'fixed_payments', matched_id: ids.spor }),
+      ev('card', 1350, 'MACFIT ISTANBUL', day(3), { status: 'matched', matched_table: 'fixed_payments', matched_id: ids.spor }),
+      ev('card', 79.99, 'SPOTIFY P1234', day(8), { status: 'matched', matched_table: 'fixed_payments', matched_id: ids.spotify }),
+      ev('card', 59.99, 'YOUTUBE PREMIUM', day(9), { status: 'ignored' }),
+      ev('card', 1500, 'SHELL ATASEHIR', day(14)),
+      ev('out', 6150, 'Mehmet', `${m}-05`, { kind: 'in', status: 'matched', matched_table: 'settlements' }),
+      ev('balance', 49830, null, today, { hm: '09:00' }),
+      ev('card', 845.5, 'MIGROS ATASEHIR', today, { hm: '13:40', status: 'pending' }),
+    ],
     installments: [
       { id: id(), ...own, name: 'Telefon', monthly_amount: 2250, first_month: `${monthKey(-2)}-01`, last_month: `${monthKey(9)}-01`, shared: false, split: 'half', paid_months: [`${m}:${U}`] },
+      { id: id(), ...his, name: 'Koltuk takımı', monthly_amount: 2400, first_month: `${monthKey(-3)}-01`, last_month: `${monthKey(2)}-01`, shared: true, split: 'half', paid_months: [] },
       { id: id(), ...own, name: 'Bulaşık makinesi', monthly_amount: 1800, first_month: `${monthKey(-1)}-01`, last_month: `${monthKey(4)}-01`, shared: true, split: 'half', paid_months: [] },
       { id: id(), ...own, name: 'Laptop', monthly_amount: 3100, first_month: `${monthKey(-4)}-01`, last_month: `${monthKey(7)}-01`, shared: false, split: 'half', paid_months: [] },
     ],
@@ -201,11 +239,16 @@ function sampleData() {
       { id: id(), ...own, name: 'Kira', amount: 18000, shared: true, split: 'half', paid_months: [`${m}:${U}`] },
       { id: id(), ...own, name: 'Elektrik', amount: 900, shared: true, split: 'half', paid_months: [] },
       { id: id(), ...own, name: 'İnternet', amount: 450, shared: false, split: 'half', paid_months: [`${m}:${U}`] },
-      { id: id(), ...own, name: 'Spor salonu', amount: 1200, shared: false, split: 'half', paid_months: [] },
+      { id: ids.spor, ...own, name: 'Spor salonu', amount: 1200, shared: false, split: 'half', on_card: true, paid_months: [`${m}:${U}`] },
+      { id: ids.netflix, ...own, name: 'Netflix', amount: 229.99, shared: false, split: 'half', on_card: true, paid_months: [`${m}:${U}`] },
+      { id: ids.spotify, ...own, name: 'Spotify', amount: 79.99, shared: false, split: 'half', on_card: true, paid_months: [`${m}:${U}`] },
+      { id: id(), ...own, name: 'Telefon faturası', amount: 650, shared: false, split: 'half', on_card: true, paid_months: [] },
+      { id: id(), ...his, name: 'Su faturası', amount: 600, shared: true, split: 'half', paid_months: [`${m}:${P}`] },
     ],
     expenses: [
       { id: id(), ...own, name: 'Market', amount: 2340, date: day(20), shared: true, split: 'half', paid_months: [`${m}:${U}`] },
-      { id: id(), ...own, name: 'Benzin', amount: 1500, date: day(14), shared: false, split: 'half', paid_months: [`${m}:${U}`] },
+      { id: id(), ...own, name: 'Benzin', amount: 1500, date: day(14), shared: false, split: 'half', on_card: true, paid_months: [`${m}:${U}`] },
+      { id: id(), ...his, name: 'Restoran', amount: 1640, date: day(18), shared: true, split: 'half', paid_months: [`${m}:${P}`] },
       { id: id(), ...own, name: 'Kahve', amount: 180, date: day(22), shared: false, split: 'half', paid_months: [`${m}:${U}`] },
     ],
     shopping_items: Object.entries(DEFAULT_SHOPPING).flatMap(([category, names]) => names.map(name => ({

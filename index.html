@@ -577,6 +577,35 @@
     .cal-row { padding: 12px 16px; border-top: 1px solid var(--line); }
     .card > .cal-row:first-child { border-top: 0; }
 
+    /* Nasıl kullanılır: tam ekran anlatım */
+    .tour { position: fixed; inset: 0; z-index: 30; display: flex; flex-direction: column; gap: 12px;
+      padding: calc(env(safe-area-inset-top) + 10px) 16px calc(env(safe-area-inset-bottom) + 14px);
+      background: radial-gradient(120% 60% at 20% 0%, color-mix(in srgb, var(--aurora-1) 35%, transparent), transparent 70%), var(--bg);
+      animation: fade .25s ease both; }
+    .tour > * { width: 100%; max-width: 520px; margin: 0 auto; }
+    .tour-top { display: flex; justify-content: space-between; align-items: center; font-size: 14px; }
+    .tour-close { width: 36px; height: 36px; border-radius: 50%; background: var(--fill); font-size: 15px; color: var(--text); }
+    .tour-progress { display: flex; gap: 5px; }
+    .tour-progress i { flex: 1; height: 4px; border-radius: 4px; background: var(--fill); cursor: pointer; transition: background .3s ease; }
+    .tour-progress i.done { background: color-mix(in srgb, var(--accent) 55%, transparent); }
+    .tour-progress i.on { background: var(--accent); }
+    .tour-shot { flex: 1; min-height: 0; position: relative; animation: tour-in .45s var(--ease-out) both; }
+    .tour-shot img { position: absolute; inset: 0; margin: auto; max-height: 100%; max-width: 100%; border-radius: 26px; border: 1px solid var(--rim);
+      box-shadow: 0 20px 50px rgba(0,0,0,.45); object-fit: contain; }
+    @keyframes tour-in { from { opacity: 0; transform: translateX(24px) scale(.97); } }
+    .tour-bubble-row { display: flex; align-items: flex-end; gap: 10px; animation: rise .45s .12s var(--ease-out) both; }
+    .tour-face { font-size: 42px; line-height: 1; flex: none; animation: bob 2.6s ease-in-out infinite; }
+    .tour-bubble { position: relative; flex: 1; display: grid; gap: 4px; padding: 12px 14px; border-radius: 20px 20px 20px 6px;
+      background: var(--card); border: 1px solid var(--rim); box-shadow: var(--shadow); font-size: 14.5px; line-height: 1.4; }
+    .tour-bubble b { font-size: 16px; }
+    .tour-nav { display: flex; gap: 10px; }
+    .tour-nav .primary { margin: 0; flex: 1; }
+    .tour-faq { flex: 1; min-height: 0; overflow: auto; display: grid; align-content: start; gap: 12px; animation: tour-in .45s var(--ease-out) both; }
+    .faq-q { align-items: flex-start; }
+    .faq-q .chev { margin-top: 2px; }
+    .faq-a { margin-top: 6px; line-height: 1.45; }
+    @media (prefers-reduced-motion: reduce) { .tour-shot, .tour-faq, .tour-bubble-row { animation: fade .15s ease both; } .tour-face { animation: none; } }
+
     /* Market arama çubuğu */
     .search-label { display: block; font-size: 13px; font-weight: 650; color: var(--muted); margin: 6px 6px 6px; letter-spacing: .02em; }
     .search-bar { display: flex; align-items: center; gap: 10px; padding: 0 14px; height: 52px; border-radius: 18px;
@@ -591,6 +620,11 @@
 
     /* Kayıt adı üstte, ayrıntı (ödeme şekli, ortak, durum) altında */
     .item > .grow > .title, .item > .grow > .sub { display: block; }
+    /* Düğme olan satırlar da tam genişlikte ve sola yaslı olsun (tutar en sağda) */
+    button.item { width: 100%; text-align: left; }
+    /* Tarih ve ay kutuları uzun açıklamanın yanında ezilmesin */
+    .field > span { min-width: 0; }
+    .field > input[type="date"], .field > input[type="month"] { flex: 0 0 auto; width: auto; min-width: 128px; text-align: right; }
     .item > .grow > .title { font-weight: 600; }
 
     /* Durum etiketleri */

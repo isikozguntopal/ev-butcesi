@@ -1620,7 +1620,7 @@ function BenScreen({ ctx }) {
   if (page === 'goals') return html`${back('Hedeflerimiz')}<${GoalsView} ctx=${ctx} />`;
   if (page === 'subs') return html`${back('Abonelikler')}<${SubscriptionsView} ctx=${ctx} />`;
   if (page === 'instcal') return html`${back('Taksit takvimi')}<${InstallmentCalendar} ctx=${ctx} />`;
-  if (page === 'help') return html`${back('Nasıl kullanılır')}<${HelpView} />`;
+  if (page === 'help') return html`<${HelpTour} onClose=${() => setPage(null)} />`;
   if (page === 'settings') return html`${back('Ayarlar')}<${SettingsView} ctx=${ctx} />`;
 
   const item = (id, icon, title, sub) => html`
@@ -1793,35 +1793,90 @@ function SettingsView({ ctx }) {
 // ---------- Nasıl kullanılır ----------
 
 const HELP_STEPS = [
-  { img: 'bu-ay.png', title: 'Ana ekran: Özet', text: 'Uygulama her açılışta buradan başlar. Üstte "Ay sonunda kalan" senin nakit bakiyendir; altında hesaplaşma, kart ödemesi, taksit ve harcama grupları var, dokununca kalemleri açılır. Sağa kaydırınca kredi kartı tarafı gelir.' },
-  { img: 'harcama.png', title: 'Harcama ekleme', text: 'Sağ alttaki + ile harcama ekle. Önce "Parayı şimdi ödediniz mi?" sorusunu cevapla. Ödediysen kartla ya da nakitle seç. Henüz ödemediysen "Henüz değil" de; bakiyeden düşer ama "henüz ödenmedi" olarak kalır, ödediğinde tikle.' },
-  { img: 'harcama.png', title: 'Harcama tarihi', text: 'Harcama tarihi, alışverişi yaptığın gündür. Hangi aya yazılacağını bu belirler. Eski bir alışverişi girerken tarihi o güne ayarla.' },
-  { img: 'bu-ay.png', title: 'Kart ödemesi', text: 'Ayın başında Bu Ay\'daki "Kredi kartı ödemesi" satırına dokun ve kartına ödediğin tutarı yaz. Kartla yaptığın tüm kayıtlar bu ödemenin içine geçer ve otomatik tiklenir.' },
-  { img: 'bu-ay.png', title: 'Kart borcunu eşitle', text: 'Kart borcu satırının altındaki "Kart borcunu eşitle" ile ekstredeki gerçek borcu yazarsın. Fark düzeltme olarak eklenir; nakit bakiyen değişmez.' },
-  { img: 'bu-ay.png', title: 'Bakiyeni eşitle', text: 'Harcama listesinin altındaki "Bakiye eşitle" ile bankadaki bakiyeni yaz. Aradaki fark "Diğer (bakiye eşitleme)" olarak eklenir.' },
-  { img: 'bu-ay.png', title: 'Taksitler', text: 'Taksitler başlığındaki "Kalan ... · tümü" ile tüm taksitlerini gör: kalan borç, bitiş tarihleri ve biten taksitler. + Yeni ile taksit ekle.' },
-  { img: null, title: 'Kayıtlarım ve ödendi tiki', text: 'Kayıtlar sekmesinde harcama, taksit ve aylık ödemeler şahsi/ortak gruplarda görünür. Planladığın ödemeyi "ödenmedi" bırak, ödeyince tikle.' },
-  { img: null, title: 'Banka hareketleri', text: 'Bankadan SMS ya da e-posta gelince uygulamayı açtığında "Bankada yeni hareket" penceresi çıkar: bir kayıtla eşleştir, harcama olarak ekle ya da yok say. Kayıtlar > Banka hareketleri\'nde bekleyen ve işlenen hareketleri görürsün.' },
-  { img: null, title: 'Hesaplaşma', text: 'Hesaplaşma sekmesinde eşinle olan ortak kalemlerin mahsuplaşmasını görürsün. "Kalem kalem kontrol et" ile her kalemi incele; gönderdiğinde "Gönderdim", parayı aldığında "Parayı aldım" de. Tamamlanınca o aya ait ortak ödemeler otomatik tiklenir ve kilitlenir.' },
-  { img: null, title: 'Hedefler ve raporlar', text: 'Ben sekmesinde Hedefler ile tatil, araba gibi birikim hedeflerini takip et. Raporlar bölümünde para nereye gidiyor, kategorilere göre ve en büyük taksitleri gör.' },
-  { img: null, title: 'Bildirimler ve ayarlar', text: 'Ben > Ayarlar\'da aile ve davet kodu, hangi bildirimlerin geleceği ve gösterim modu var. Her akşam 22:00\'de bugün harcama girmediysen hatırlatma gelir.' },
+  { img: '01-ozet.jpg', face: '🐨', title: 'Özet: ana ekran', text: 'En üstte ay sonunda kalan nakit paran var. Halka, gelirinin ne kadarını harcadığını gösterir. Yeşil noktalı satır bankanın bildirdiği bakiye.' },
+  { img: '02-durum.jpg', face: '🐼', title: 'Ödendi mi, ödenmedi mi?', text: 'Gruplara dokununca kalemler açılır. Yeşil "ödendi", turuncu "ödenmedi" demek. Bankadan para çıkıp eşleşince kendiliğinden ödendi olur.' },
+  { img: '03-kart.jpg', face: '🦊', title: 'Kart tarafı', text: 'Özet\'te sola kaydır: kullanılabilir limit, kalan borç ve karttan çekilen aylık ödemeler burada. Kart SMS\'i gelince limit kendiliğinden güncellenir.' },
+  { img: '04-harcama.jpg', face: '🐰', title: 'Harcama girmek', text: 'Sağ alttaki + ile gir. Peşin, taksitli ya da her ay; kartla mı nakitle mi ödediğini seç. Eşinle ortaksa "Ortak alım"ı işaretle.' },
+  { img: '05-banka.jpg', face: '🐶', title: 'Bankadan gelen hareket', text: 'Banka SMS\'i gelince uygulamayı açtığında bu pencere çıkar. Öneri doğruysa "Doğru, eşleştir" de; değilse başka bir kayıt seç ya da yeni olarak ekle.' },
+  { img: '06-kayitlar.jpg', face: '🐻', title: 'Kayıtlar', text: 'O ayın bütün kayıtları ve banka hareketleri burada. Yuvarlağa dokunup ödendi işaretle; kayda dokunup düzenle ya da sil.' },
+  { img: '07-hesaplasma.jpg', face: '🐯', title: 'Hesaplaşma', text: 'Ortak harcamaların yarısı karşı tarafa yazılır, karşılıklı borçlar düşülür. Ayın 5\'inde kimin kime ne göndereceği burada; ayın 3\'ünde hatırlatma gelir.' },
+  { img: '08-alisveris.jpg', face: '🐹', title: 'Alışveriş listesi', text: 'Üstteki aramadan ürün bul ya da yeni ekle. Aldıklarını işaretle; bitince "Alışverişi tamamla" ile tutarı ve fişi kaydet.' },
+  { img: '09-ben.jpg', face: '🐸', title: 'Ben', text: 'Birikimin, aboneliklerin, taksit takvimi, raporlar ve ayarlar burada.' },
+  { img: '10-hedefler.jpg', face: '🐷', title: 'Hedeflerimiz', text: 'Ortak hedefleri ikiniz de görürsünüz. Ay sonunda artan paradan "+ Ekle" ile hedefe ayırın.' },
 ];
 
-function HelpView() {
+const HELP_FAQ = [
+  ['Bankadaki bakiye ile uygulamadaki neden farklı?', 'Girilmemiş bir harcama ya da kaçan bir hareket olabilir. Özet\'teki "Bakiye eşitle" ile bankadaki tutarı yaz; fark "Diğer (bakiye eşitleme)" olarak eklenir. Sabah gelen bakiye SMS\'inde fark çıkarsa uygulama da sorar.'],
+  ['Kart limitim yanlış görünüyor.', 'Her kart SMS\'inde limit bankanın bildirdiğine eşitlenir. Beklemek istemezsen Özet\'te sola kaydır, "Kart bilgilerini güncelle"ye bas ve bankadaki kullanılabilir limiti yaz.'],
+  ['Kart borcunu ay içinde ödersem ne yapayım?', 'Özet\'te "Kart borcunun bir kısmını öde"ye bas, tutarı yaz. Para nakitten düşer, kart borcu azalır, limit hemen açılır.'],
+  ['SMS geldi ama pencere çıkmadı.', 'iPhone\'da Kestirmeler > Otomasyon\'daki banka otomasyonunun açık olduğuna bak. Gelen hareketler Kayıtlar > Banka hareketleri\'nde de listelenir.'],
+  ['Eşimin girdiği kaydı silebilir miyim?', 'Ortak kayıtları ikiniz de silebilirsiniz: kayda dokun, "Düzenle"ye bas, en alttaki sil düğmesini kullan. Kişisel kayıtları sadece sahibi siler.'],
+  ['Hesaplaşma hangi aya düşer?', 'Ortak harcama, kartı ödeyenin hesap kesim gününe göre bir sonraki ekstreyle birlikte o ayın 5\'inde hesaplaşmaya girer. Kesim gününü Ben > Ayarlar\'da yazabilirsin.'],
+  ['Abonelikler nasıl bulunuyor?', 'Kart SMS\'lerinden: aynı yerden iki farklı ayda çekim olunca abonelik sayılır. Netflix, Youtube gibi bilinen servisler ilk çekimde görünür. Fiyat artarsa etiket çıkar.'],
+  ['Bildirimler gelmiyor.', 'Uygulama ana ekrana eklenmiş olmalı. Ben > Ayarlar > Bildirimler\'den açıp "Test bildirimi" gönder.'],
+  ['Gösterim modu nedir?', 'Uygulamayı başkasına gösterirken gerçek verilerini gizler, örnek verilerle açar. Çıkmak için üstteki şeride dokunup hesabının şifresini yaz.'],
+];
+
+/** Nasıl kullanılır: tam ekran, 10 adım; her adımda ekran görüntüsü ve konuşan bir hayvan, sonunda sık sorulanlar.
+ *  Sayfanın en üstüne çizilir; hareketli ekranların içinde kalıp kaymasın. */
+function HelpTour(props) {
+  useEffect(() => {
+    const el = document.createElement('div');
+    document.body.appendChild(el);
+    render(html`<${HelpTourBody} ...${props} />`, el);
+    return () => { render(null, el); el.remove(); };
+  }, []);
+  return null;
+}
+function HelpTourBody({ onClose }) {
   const [i, setI] = useState(0);
+  const [faqOpen, setFaqOpen] = useState(null);
+  const touch = useRef(null);
+  useEffect(() => { lockScroll(); return unlockScroll; }, []);
+  const n = HELP_STEPS.length;
+  const faq = i >= n;
+  const go = k => setI(Math.max(0, Math.min(n, k)));
+  const onTouchStart = e => { touch.current = e.touches[0].clientX; };
+  const onTouchEnd = e => {
+    if (touch.current == null) return;
+    const dx = e.changedTouches[0].clientX - touch.current;
+    touch.current = null;
+    if (dx < -50) go(i + 1);
+    if (dx > 50) go(i - 1);
+  };
   const step = HELP_STEPS[i];
   return html`
-    <${Group} title=${`Adım ${i + 1} / ${HELP_STEPS.length}`}>
-      <div class="help">
-        ${step.img && html`<img class="help-img" src=${'./tutorial/' + step.img} alt=${step.title} />`}
-        <h2>${step.title}</h2>
-        <p>${step.text}</p>
+    <div class="tour" role="dialog" aria-label="Nasıl kullanılır" onTouchStart=${onTouchStart} onTouchEnd=${onTouchEnd}>
+      <div class="tour-top">
+        <span class="muted">${faq ? 'Sık sorulanlar' : `Adım ${i + 1} / ${n}`}</span>
+        <button class="tour-close" aria-label="Kapat" onClick=${onClose}>✕</button>
       </div>
-    <//>
-    <div class="help-nav">
-      <button class="pill" disabled=${i === 0} onClick=${() => { setI(i - 1); window.scrollTo(0, 0); }}>‹ Önceki</button>
-      <span class="dots">${HELP_STEPS.map((_, k) => html`<i class=${k === i ? 'on' : ''} onClick=${() => setI(k)}></i>`)}</span>
-      <button class="pill on" disabled=${i === HELP_STEPS.length - 1} onClick=${() => { setI(i + 1); window.scrollTo(0, 0); }}>Sonraki ›</button>
+      <div class="tour-progress">${HELP_STEPS.map((_, k) => html`<i class=${k < i || faq ? 'done' : k === i ? 'on' : ''} onClick=${() => go(k)}></i>`)}</div>
+      ${faq ? html`
+        <div class="tour-faq" key="faq">
+          <div class="tour-bubble-row"><span class="tour-face">🦉</span><div class="tour-bubble"><b>Aklına takılan bir şey mi var?</b><span>Sorulara dokunup cevabı aç.</span></div></div>
+          <div class="card">
+            ${HELP_FAQ.map(([q, a], k) => html`
+              <button class=${'item faq-q' + (faqOpen === k ? ' open' : '')} key=${k} onClick=${() => setFaqOpen(faqOpen === k ? null : k)}>
+                <span class="grow"><span class="title">${q}</span>${faqOpen === k && html`<span class="sub faq-a">${a}</span>`}</span>
+                <span class=${'chev' + (faqOpen === k ? ' open' : '')}>›</span>
+              </button>`)}
+          </div>
+        </div>
+        <div class="tour-nav">
+          <button class="primary ghost" onClick=${() => go(0)}>↺ Baştan izle</button>
+          <button class="primary" onClick=${onClose}>Bitti</button>
+        </div>`
+      : html`
+        <div class="tour-shot" key=${'s' + i}><img src=${'./tutorial/' + step.img} alt=${step.title} /></div>
+        <div class="tour-bubble-row" key=${'b' + i}>
+          <span class="tour-face">${step.face}</span>
+          <div class="tour-bubble"><b>${step.title}</b><span>${step.text}</span></div>
+        </div>
+        <div class="tour-nav">
+          <button class="primary ghost" disabled=${i === 0} onClick=${() => go(i - 1)}>‹ Geri</button>
+          <button class="primary" onClick=${() => go(i + 1)}>${i === n - 1 ? 'Sık sorulanlar ›' : 'İleri ›'}</button>
+        </div>`}
     </div>`;
 }
 
@@ -2911,7 +2966,9 @@ function App() {
     // Preact bir sonraki mikro görevde çizer; geçiş yeni ekran çizildikten sonra başlasın.
     // Tarayıcı geçişi atlarsa (sayfa arka plandaysa) sekme yine de değişsin.
     if (document.startViewTransition && !REDUCE && !document.hidden) {
-      document.startViewTransition(() => { swap(); return new Promise(r => setTimeout(r, 0)); });
+      const vt = document.startViewTransition(() => { swap(); return new Promise(r => setTimeout(r, 0)); });
+      // Geçiş yarıda kalırsa (hızlı art arda dokunma) hata sayılmasın
+      [vt.ready, vt.finished, vt.updateCallbackDone].forEach(p => p?.catch(() => {}));
       setTimeout(swap, 300);
     } else swap();
   };
