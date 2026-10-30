@@ -37,6 +37,57 @@ async function sendTo(admin: Admin, userIds: string[], title: string, body: stri
   return sent;
 }
 
+const AYLAR = ['Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran', 'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'];
+const tlFmt = (v: number) => new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY', maximumFractionDigits: 2 }).format(v);
+const mk = (d: string | null) => (d ? String(d).slice(0, 7) : '');
+// deno-lint-ignore no-explicit-any
+type Row = Record<string, any>;
+
+/** Uygulamadaki settlementFor'un sunucu kopyası: m ayının 5'inde kim kime ne kadar gönderecek.
+ *  Yarı yarıya ortak kalemlerin yarısı karşı tarafa borç yazılır; ay içinde "gönderdim" denen harcamalar düşülür. */
+function settlementOf(rows: { expenses: Row[]; installments: Row[]; fixed: Row[]; settled: boolean }, A: string, B: string, m: string) {
+  const owe: Record<string, number> = { [A]: 0, [B]: 0 };
+  const add = (it: Row, amount: number, isExpense: boolean) => {
+    if (!it.shared || it.split !== 'half' || !(it.payer_id in owe) || !amount) return;
+    if (isExpense) {
+      const debtorKey = `${mk(it.date)}:${it.payer_id === A ? B : A}`;
+      const p: string[] = it.paid_months || [];
+      const legacy = p.includes(debtorKey) && !p.includes(`${debtorKey}:settled`) && !rows.settled;
+      if (p.includes(`${debtorKey}:sent`) || legacy) return;
+    }
+    owe[it.payer_id === A ? B : A] += amount / 2;
+  };
+  rows.expenses.filter(e => mk(e.pay_date || e.date) === m).forEach(e => add(e, Number(e.amount), true));
+  rows.installments.filter(i => m >= mk(i.first_month) && m <= mk(i.last_month)).forEach(i => add(i, Number(i.monthly_amount), false));
+  rows.fixed.forEach(f => add(f, Number(f.amount), false));
+  const net = owe[A] - owe[B];
+  return { from: net > 0 ? A : B, to: net > 0 ? B : A, amount: Math.round(Math.abs(net) * 100) / 100 };
+}
+
+/** Ayın 3'ü: hesaplaşması bekleyen ailelerde gönderecek ve alacak kişiye tutarla hatırlatma */
+async function settleReminder(admin: Admin, month: string, wants: (t: string) => string[]) {
+  const { data: members } = await admin.from('members').select('user_id, household_id, display_name').order('created_at');
+  const homes = new Map<string, Row[]>();
+  for (const m of members ?? []) homes.set(m.household_id, [...(homes.get(m.household_id) ?? []), m]);
+  const ok = new Set(wants('payday'));
+  const day = `5 ${AYLAR[Number(month.slice(5, 7)) - 1]}`;
+  let sent = 0;
+  for (const [hid, list] of homes) {
+    if (list.length < 2) continue;
+    const [A, B] = list.map(x => x.user_id);
+    const { data: rec } = await admin.from('settlements').select('sent_at, received_at').eq('household_id', hid).eq('month', month).maybeSingle();
+    if (rec?.sent_at || rec?.received_at) continue;
+    const pick = (t: string) => admin.from(t).select('*').eq('household_id', hid).eq('shared', true);
+    const [{ data: expenses }, { data: installments }, { data: fixed }] = await Promise.all([pick('expenses'), pick('installments'), pick('fixed_payments')]);
+    const s = settlementOf({ expenses: expenses ?? [], installments: installments ?? [], fixed: fixed ?? [], settled: false }, A, B, month);
+    if (s.amount < 1) continue;
+    const name = (id: string) => list.find(x => x.user_id === id)?.display_name || 'eşin';
+    if (ok.has(s.from)) sent += await sendTo(admin, [s.from], '💸 Hesaplaşma yaklaşıyor', `${day} günü ${name(s.to)} için ${tlFmt(s.amount)} göndereceksin 🐻`);
+    if (ok.has(s.to)) sent += await sendTo(admin, [s.to], '💸 Hesaplaşma yaklaşıyor', `${day} günü ${name(s.from)} sana ${tlFmt(s.amount)} gönderecek 🐻`);
+  }
+  return sent;
+}
+
 /** Zamanlanmış hatırlatmalar (pg_cron her ayın 1, 3 ve 5'inde çağırır) */
 async function monthly(admin: Admin) {
   const tr = new Date(Date.now() + 3 * 3600_000); // Türkiye saati
@@ -54,6 +105,7 @@ async function monthly(admin: Admin) {
     sent += await sendTo(admin, wants('card').filter((id: string) => !doneIds.has(id)),
       '💳 Kredi kartı ödemesi', 'Bu ay kartına ne kadar ödediğini girmeyi unutma 🐷');
   }
+  if (day === 3) sent += await settleReminder(admin, month, wants);
   if (day === 5) {
     sent += await sendTo(admin, wants('payday'), '💸 Hesaplaşma günü', 'Bu ayın ortak harcamalarına göre kimin kime ne atacağı hazır 🐻');
   }

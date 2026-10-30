@@ -3,7 +3,9 @@
 
 export type Parsed = { kind: 'card' | 'balance' | 'in' | 'out'; amount: number; merchant: string | null; occurred_at: string | null;
   /** Sabah gelen günlük özet ("28/10/2026 tarihli guncel bakiyesi"): gün sonu bakiyesi, kontrol için kullanılır */
-  daily?: boolean };
+  daily?: boolean;
+  /** Kart SMS'indeki "Kullanilabilir limit : 351,23 TL": kartın o anki kullanılabilir limiti */
+  limit?: number };
 
 const MAP: Record<string, string> = {
   'İ': 'i', 'I': 'i', 'ı': 'i', 'Ş': 's', 'ş': 's', 'Ğ': 'g', 'ğ': 'g', 'Ü': 'u', 'ü': 'u', 'Ö': 'o', 'ö': 'o', 'Ç': 'c', 'ç': 'c',
@@ -49,6 +51,7 @@ export function parseBankText(text: string): Parsed[] {
   else if (/(gelmistir|gelen (eft|havale|fast)|hesabiniza|para girisi|yatirilmistir)/.test(t)) kind = 'in';
   else if (/(gonderilmistir|giden (eft|havale|fast)|hesabinizdan|para cikisi|cekilmistir)/.test(t)) kind = 'out';
 
+  const lim = t.match(/kullanilabilir limit\D{0,6}(-?\d{1,3}(?:\.\d{3})*,\d{2})\s*(?:tl|try)/);
   if (kind && first) {
     let merchant: string | null = null;
     if (kind === 'card') {
@@ -69,7 +72,7 @@ export function parseBankText(text: string): Parsed[] {
       if (who) merchant = clean(raw.substr(who.index! + who[0].indexOf(who[1]), who[1].length));
     }
     if (cardPay) merchant = 'Kredi kartı ödemesi';
-    out.push({ kind, amount: num(first[1]), merchant, occurred_at: when });
+    out.push({ kind, amount: num(first[1]), merchant, occurred_at: when, ...(lim ? { limit: num(lim[1]) } : {}) });
   }
   if (bal) out.push({ kind: 'balance', amount: num(bal[1]), merchant: null, occurred_at: when, ...(/tarihli guncel bakiye/.test(t) && !kind ? { daily: true } : {}) });
   return out;

@@ -20,7 +20,7 @@ webpush.setVapidDetails(
 const KINDS = ['card', 'balance', 'in', 'out'];
 const tl = (v: number) => new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY' }).format(v);
 
-type Event = { kind: string; amount: number; merchant?: string | null; occurred_at?: string | null; msg_id: string; subject?: string; daily?: boolean };
+type Event = { kind: string; amount: number; merchant?: string | null; occurred_at?: string | null; msg_id: string; subject?: string; daily?: boolean; limit?: number };
 const GAP = 'Günlük özetle fark';
 type Text = { text: string; id?: string; at?: string };
 
@@ -97,6 +97,18 @@ Deno.serve(async req => {
     if (!fin) await admin.from('finances').insert({ user_id: uid, bank_balance: latest.amount, bank_balance_at: latest.occurred_at });
     else if (!fin.bank_balance_at || fin.bank_balance_at < latest.occurred_at) {
       await admin.from('finances').update({ bank_balance: latest.amount, bank_balance_at: latest.occurred_at }).eq('user_id', uid);
+    }
+  }
+
+  // Kart SMS'indeki kullanılabilir limit: kartın kullanılan kısmı bankanın bildirdiğine eşitlenir (Bu Ay > kart)
+  const limits = fresh.map(r => ({ r, lim: events.find(e => e.msg_id === r.msg_id)?.limit })).filter(x => Number.isFinite(x.lim))
+    .sort((a, b) => (a.r.occurred_at < b.r.occurred_at ? 1 : -1));
+  if (limits.length) {
+    const { r, lim } = limits[0];
+    const day = new Date(Date.parse(r.occurred_at) + 3 * 3600_000).toISOString().slice(0, 10); // Türkiye günü
+    const { data: fin } = await admin.from('finances').select('card_limit, card_used_at').eq('user_id', uid).maybeSingle();
+    if (fin && Number(fin.card_limit) > 0 && (!fin.card_used_at || String(fin.card_used_at).slice(0, 10) <= day)) {
+      await admin.from('finances').update({ card_used: Math.max(0, Number(fin.card_limit) - Number(lim)), card_used_at: day }).eq('user_id', uid);
     }
   }
 

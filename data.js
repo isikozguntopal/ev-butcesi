@@ -143,7 +143,7 @@ const demo = {
   async finance() { return readDb().finances[0] || null; },
   async saveFinance(row) {
     const db = readDb();
-    db.finances = [row];
+    db.finances = [{ ...(db.finances?.[0] || {}), ...row }];
     writeDb(db);
   },
   async savePush() {},

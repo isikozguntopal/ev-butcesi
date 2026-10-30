@@ -509,6 +509,7 @@
     .icon { width: 40px; height: 40px; font-size: 24px; display: grid; place-items: center; background: var(--glass);
       border: 1px solid var(--rim); border-radius: 50%; transition: transform .12s var(--spring); }
     .icon:active { transform: scale(.92); background: var(--glass); }
+    .icon:disabled { opacity: .25; }
 
     /* Kartlar: yarı saydam yüzey + parlak kenar + derinlik (bulanıklık sadece birkaç yüzeyde) */
     .card, .method, .bubble {
@@ -565,6 +566,16 @@
 
     /* Yürüyen hayvanlar alt menünün ve ortadaki Özet düğmesinin üstünden geçsin */
     .walker { bottom: calc(env(safe-area-inset-bottom) + 98px); z-index: 11; }
+
+    /* Hedef ve taksit takvimi çubukları: soldan dolar */
+    .goal-bar { height: 8px; border-radius: 8px; background: var(--fill); overflow: hidden; margin: 8px 0 6px; }
+    .goal-bar i { display: block; height: 100%; border-radius: inherit; transform-origin: left; background: linear-gradient(90deg, var(--pos), var(--accent-2));
+      transition: transform 1s var(--ease-out); }
+    @starting-style { .goal-bar i { transform: scaleX(0) !important; } }
+    .item.goal { cursor: default; }
+    .item.goal .grow { cursor: pointer; }
+    .cal-row { padding: 12px 16px; border-top: 1px solid var(--line); }
+    .card > .cal-row:first-child { border-top: 0; }
 
     /* Market arama çubuğu */
     .search-label { display: block; font-size: 13px; font-weight: 650; color: var(--muted); margin: 6px 6px 6px; letter-spacing: .02em; }
