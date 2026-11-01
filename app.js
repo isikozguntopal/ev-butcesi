@@ -1709,7 +1709,7 @@ const NOTIFY_TYPES = [
   ['shared', 'Ortak kayıt eklenince', 'Eşin ortak harcama, taksit ya da her ay ödemesi ekleyince'],
   ['wish', 'Alacaklara ekleme', 'Alacaklarımız listesine bir şey eklenince'],
   ['settle', 'Hesaplaşma hareketleri', 'Eşin "Gönderdim" ya da "Parayı aldım" deyince'],
-  ['card', 'Kart ödemesi hatırlatması', "Ayın 1'i ve 3'ü, kart ödemeni girmediysen"],
+  ['card', 'Kart ödemesi hatırlatması', "Ayın 5'i, kart ödemen henüz görünmüyorsa"],
   ['payday', 'Hesaplaşma günü', "Her ayın 5'i, 09:00"],
   ['daily', '22:00 hatırlatması', 'Bugün harcama girmediysen her akşam'],
   ['bank', 'Bankadan yeni hareket', 'Banka SMS\'i ya da e-postası gelince'],

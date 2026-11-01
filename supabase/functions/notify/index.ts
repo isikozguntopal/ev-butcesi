@@ -99,11 +99,12 @@ async function monthly(admin: Admin) {
     .filter((m: { notify_prefs?: Record<string, boolean> }) => (m.notify_prefs ?? {})[type] !== false)
     .map((m: { user_id: string }) => m.user_id);
   let sent = 0;
-  if (day <= 3) {
+  // Maaş 5'inde yatıyor, kart ödemesi de o gün yapılıyor; o güne kadar ödenmemiş olması normal
+  if (day === 5) {
     const { data: done } = await admin.from('card_payments').select('owner_id').eq('month', month);
     const doneIds = new Set((done ?? []).map((d: { owner_id: string }) => d.owner_id));
     sent += await sendTo(admin, wants('card').filter((id: string) => !doneIds.has(id)),
-      '💳 Kredi kartı ödemesi', 'Bu ay kartına ne kadar ödediğini girmeyi unutma 🐷');
+      '💳 Kart ödemesi günü', 'Maaş yattıysa kartını ödemeyi unutma; banka SMS\'i gelmezse tutarı elle gir 🐷');
   }
   if (day === 3) sent += await settleReminder(admin, month, wants);
   if (day === 5) {
