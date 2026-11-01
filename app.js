@@ -44,6 +44,12 @@ function addM(k, n) {
   const t = y * 12 + (m - 1) + n;
   return `${Math.floor(t / 12)}-${pad((t % 12) + 1)}`;
 }
+/** Maaş günü: ayın 5'i; hafta sonuna denk gelirse takip eden pazartesi ("2026-11-05") */
+function payday(m) {
+  const [y, mo] = m.split('-').map(Number);
+  const wd = new Date(y, mo - 1, 5).getDay();
+  return `${m}-${pad(wd === 6 ? 7 : wd === 0 ? 6 : 5)}`;
+}
 function diffM(a, b) {
   const [y1, m1] = a.split('-').map(Number);
   const [y2, m2] = b.split('-').map(Number);
@@ -550,7 +556,12 @@ function MonthScreen({ ctx }) {
   const left = b.left;
   // Bankanın e-postayla bildirdiği son bakiye (sadece bu ay ekranında); fark = banka − uygulamaya göre şu an olması gereken
   const bank = m === thisMonth() && fin.bank_balance != null ? Number(fin.bank_balance) : null;
-  const bankDiff = bank != null ? Math.round((bank - (b.left + b.unpaid)) * 100) / 100 : 0;
+  // Maaş yatmadan önce bankada gelir yok, geçen aydan kalan para var (devir ancak maaştan sonra sorulur)
+  const prePay = m === thisMonth() && today() < payday(m);
+  const prev = addM(m, -1);
+  const prevLeft = !carry && prev >= '2026-10' ? nakitLeftFor(rows, uid, prev, income, ctx.members) : 0;
+  const expected = b.left + b.unpaid - (prePay ? income : 0) + prevLeft;
+  const bankDiff = bank != null ? Math.round((bank - expected) * 100) / 100 : 0;
 
   const toggle = makeToggle(ctx, m);
   const partner = ctx.members.find(x => x.user_id !== uid);
@@ -597,7 +608,7 @@ function MonthScreen({ ctx }) {
         </div>
         ${!income && html`<div class="sub">Ben → Birikimim bölümüne aylık gelirini yaz</div>`}
         <div class="rows">
-          <div class="row"><span>Gelir</span><b>${tl(income)}</b></div>
+          <div class="row"><span>Gelir${prePay && income > 0 ? html`<small class="muted"> · maaş günü ${new Date(payday(m)).toLocaleDateString('tr-TR', { day: 'numeric', month: 'long' })}</small>` : ''}</span><b>${tl(income)}</b></div>
           ${carryAmt !== 0 && html`<div class="row"><span>Önceki aydan devir</span><b>${tl(carryAmt)}</b></div>`}
           ${bank != null && html`
             <div class="row"><span><i class="live" aria-hidden="true"></i>Bankadaki bakiye<small class="muted"> · ${whenShort(fin.bank_balance_at)}</small></span><b>${tl(bank)}</b></div>
@@ -628,13 +639,13 @@ function MonthScreen({ ctx }) {
     ${detail && html`<${RecordDetail} ctx=${ctx} m=${m} rec=${detail} onClose=${() => setDetail(null)} onEdit=${() => { setForm({ kind: detail.kind, item: detail.it }); setDetail(null); }} />`}
     ${taksitOpen && html`<${TaksitSheet} ctx=${ctx} onAdd=${() => setForm({ kind: 'installment' })} onClose=${() => setTaksitOpen(false)} />`}
     ${partOpen && html`<${CardPartSheet} ctx=${ctx} onClose=${() => setPartOpen(false)} />`}
-    ${balOpen && html`<${BalanceSheet} ctx=${ctx} expected=${b.left + b.unpaid} initial=${bank ?? undefined} onClose=${() => setBalOpen(false)} />`}`;
+    ${balOpen && html`<${BalanceSheet} ctx=${ctx} expected=${expected} note=${prePay ? 'geçen aydan kalan − bu ay ödenenler; maaş henüz yatmadı' : prevLeft ? 'gelir + geçen aydan kalan − bu ay ödenenler' : 'gelir − bu ay ödenenler'} initial=${bank ?? undefined} onClose=${() => setBalOpen(false)} />`}`;
 }
 
 // ---------- Bakiye eşitleme ----------
 
 /** Bankadaki gerçek bakiyeyi girince farkı tek bir "Diğer" harcamasıyla kapatır */
-function BalanceSheet({ ctx, expected, initial, onClose }) {
+function BalanceSheet({ ctx, expected, note, initial, onClose }) {
   const { uid, actions } = ctx;
   const [real, setReal] = useState(initial ?? 0);
   const [touched, setTouched] = useState(initial != null);
@@ -655,7 +666,7 @@ function BalanceSheet({ ctx, expected, initial, onClose }) {
   return html`
     <${Sheet} title="⚖️ Bakiye eşitle" onClose=${onClose}>
       <div class="card rows">
-        <div class="row"><span>Uygulamaya göre hesabında olması gereken<small class="muted"> (gelir − bu ay ödenenler)</small></span><b>${tl(expected)}</b></div>
+        <div class="row"><span>Uygulamaya göre hesabında olması gereken<small class="muted"> (${note})</small></span><b>${tl(expected)}</b></div>
       </div>
       <div class="card form">
         <label class="field"><span>Bankadaki gerçek bakiye</span><${MoneyInput} value=${real} onInput=${v => { setReal(v); setTouched(true); }} /></label>
@@ -3079,11 +3090,11 @@ function App() {
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, [phase]);
 
-  // Ayın 5'inden itibaren (maaş günü): bu ayın kart ödemesi girilmediyse sor ("Sonra gireceğim" o gün için susturur)
+  // Maaş gününden itibaren: bu ayın kart ödemesi girilmediyse sor ("Sonra gireceğim" o gün için susturur)
   useEffect(() => {
     if (phase !== 'ready' || SHOW || !rows) return;
-    if (new Date().getDate() < 5) return;
     const m = thisMonth();
+    if (today() < payday(m)) return;
     let asked = false;
     try { asked = localStorage.getItem('tf-card-asked') === localDay(new Date().toISOString()); } catch { /* yok say */ }
     if (!asked && !cardFor(rows, user.id, m)) setAskCard(true);
