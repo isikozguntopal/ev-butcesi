@@ -3079,12 +3079,13 @@ function App() {
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, [phase]);
 
-  // Her açılışta: bu ayın kart ödemesi girilmediyse sor ("Sonra gireceğim" sadece bu açılış için)
+  // Ayın 5'inden itibaren (maaş günü): bu ayın kart ödemesi girilmediyse sor ("Sonra gireceğim" o gün için susturur)
   useEffect(() => {
     if (phase !== 'ready' || SHOW || !rows) return;
+    if (new Date().getDate() < 5) return;
     const m = thisMonth();
     let asked = false;
-    try { asked = sessionStorage.getItem(`tf-card-asked-${m}`) === '1'; } catch { /* yok say */ }
+    try { asked = localStorage.getItem('tf-card-asked') === localDay(new Date().toISOString()); } catch { /* yok say */ }
     if (!asked && !cardFor(rows, user.id, m)) setAskCard(true);
   }, [phase, rows === null]);
   // Ayın 5'inden sonra: önceki ayda nakit bakiye kaldıysa devir sor (bir kez; Ekim 2026'dan önceki aylar hariç)
@@ -3102,7 +3103,7 @@ function App() {
   }, [phase, rows === null, askCard]);
   const closeCardAsk = () => {
     setAskCard(false);
-    try { sessionStorage.setItem(`tf-card-asked-${thisMonth()}`, '1'); } catch { /* yok say */ }
+    try { localStorage.setItem('tf-card-asked', localDay(new Date().toISOString())); } catch { /* yok say */ }
   };
 
   async function guard(fn) {
