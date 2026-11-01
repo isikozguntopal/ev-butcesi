@@ -1165,6 +1165,63 @@ function SwipeRow({ onDelete, children }) {
     </div>`;
 }
 
+/** Basılı tutma: ~0,5 sn parmak kıpırdamadan durursa onLong çalışır; ardından gelen dokunuş (click) yutulur */
+function useLongPress(onLong, ms = 500) {
+  const t = useRef(null), start = useRef(null), fired = useRef(false);
+  const stop = () => { clearTimeout(t.current); t.current = null; };
+  return {
+    onPointerDown: e => {
+      fired.current = false; start.current = [e.clientX, e.clientY];
+      t.current = setTimeout(() => { fired.current = true; navigator.vibrate?.(15); onLong(); }, ms);
+    },
+    onPointerMove: e => { if (t.current && Math.hypot(e.clientX - start.current[0], e.clientY - start.current[1]) > 8) stop(); },
+    onPointerUp: stop, onPointerCancel: stop, onPointerLeave: stop,
+    onContextMenu: e => e.preventDefault(),
+    onClickCapture: e => { if (fired.current) { e.stopPropagation(); e.preventDefault(); fired.current = false; } },
+  };
+}
+
+/** Listedeki ürün satırı: dokununca sepete at, basılı tutunca düzenle */
+function ShopRow({ item, onToggle, onEdit }) {
+  const press = useLongPress(onEdit);
+  return html`<button class="item press" ...${press} onClick=${onToggle}>
+    <span class=${'check' + (item.checked ? ' on' : '')}>${item.checked ? '✓' : ''}</span>
+    <span class=${'grow title' + (item.checked ? ' done' : '')}>${item.name}</span></button>`;
+}
+
+/** Ürünü düzenle: ad, reyon; listeden çıkar ya da kataloğdan tamamen sil */
+function ShopItemSheet({ ctx, item, onClose }) {
+  const { actions } = ctx;
+  const [name, setName] = useState(item.name);
+  const [cat, setCat] = useState(item.category || 'Diğer');
+  const [busy, setBusy] = useState(false);
+  async function save() {
+    if (!name.trim()) return;
+    setBusy(true);
+    if (await actions.patch('shopping_items', item.id, { name: name.trim(), category: cat }) !== false) onClose();
+    setBusy(false);
+  }
+  async function drop() {
+    await actions.patch('shopping_items', item.id, { in_list: false, checked: false });
+    onClose();
+  }
+  async function remove() {
+    if (!confirm(`"${item.name}" ürün listesinden tamamen silinsin mi? Aramada da çıkmaz.`)) return;
+    if (await actions.del('shopping_items', item.id) !== false) onClose();
+  }
+  return html`
+    <${Sheet} title="Ürünü düzenle" onClose=${onClose}
+      right=${html`<button class="link strong" disabled=${busy || !name.trim()} onClick=${save}>Kaydet</button>`}>
+      <div class="card form">
+        <label class="field"><span>Ürün adı</span><input value=${name} onInput=${e => setName(e.target.value)} onKeyDown=${e => e.key === 'Enter' && save()} /></label>
+        <label class="field"><span>Reyon</span><select value=${cat} onChange=${e => setCat(e.target.value)}>${[...new Set([...CATEGORIES, cat])].map(c => html`<option value=${c}>${c}</option>`)}</select></label>
+      </div>
+      <p class="hint">Miktar yazmak istersen adın yanına ekleyebilirsin, ör. "Süt (2 litre)".</p>
+      ${item.in_list && html`<button class="link small center-block" onClick=${drop}>Listeden çıkar</button>`}
+      <button class="danger" onClick=${remove}>Ürünü tamamen sil</button>
+    <//>`;
+}
+
 /** Market listesi ortak; kişisel liste (owner_id = ben) sadece bana görünür */
 function ShoppingScreen({ ctx, embedded, personal }) {
   const { rows, actions, uid, names } = ctx;
@@ -1172,6 +1229,7 @@ function ShoppingScreen({ ctx, embedded, personal }) {
   const [cat, setCat] = useState('Diğer');
   const [tripOpen, setTripOpen] = useState(false);
   const [openTrip, setOpenTrip] = useState(null);
+  const [editing, setEditing] = useState(null);
   const items = personal ? rows.shopping_items.filter(i => i.owner_id === uid) : rows.shopping_items.filter(i => !i.owner_id);
   // Kişisel listede ortak ürün kataloğundan da seçilebilir; seçilince kişisel kopyası oluşur
   const pool = personal
@@ -1207,14 +1265,14 @@ function ShoppingScreen({ ctx, embedded, personal }) {
       <input id="shop-search" type="search" enterkeyhint="search" placeholder="Süt, ekmek, deterjan…" value=${q} onInput=${e => setQ(e.target.value)} />
       ${q && html`<button class="search-clear" aria-label="Aramayı temizle" onClick=${() => setQ('')}>✕</button>`}
     </div>
-    ${!term && html`<p class="search-hint">${inList.length ? `Listede ${inList.length} ürün var${checked.length ? `, ${checked.length} tanesi sepette` : ''}.` : 'Aradığın ürün yoksa yazıp listeye ekleyebilirsin.'}</p>`}
+    ${!term && html`<p class="search-hint">${inList.length ? `Listede ${inList.length} ürün var${checked.length ? `, ${checked.length} tanesi sepette` : ''}.` : 'Aradığın ürün yoksa yazıp listeye ekleyebilirsin.'}${inList.length ? ' Değiştirmek için ürünün üstüne basılı tut.' : ''}</p>`}
     ${term && html`<div class="card">
       ${matches.map(it => html`<button class="item" key=${it.id} onClick=${() => !it.in_list && addOne(it)}>
         <span class="grow title">${it.name}</span>
         <span class=${'pill' + (it.in_list ? ' on' : '')}>${it.in_list ? '✓ listede' : '+ listeye'}</span></button>`)}
       ${!matches.length && html`<div class="item add-new">
         <span class="grow"><span class="title">Sonuç bulunamadı</span><span class="sub">"${q.trim()}" için yeni ürün ekle</span></span>
-        <select value=${cat} onChange=${e => setCat(e.target.value)}>${CATS.map(c => html`<option value=${c}>${c}</option>`)}</select>
+        <select value=${cat} onChange=${e => setCat(e.target.value)}>${CATEGORIES.map(c => html`<option value=${c}>${c}</option>`)}</select>
         <button class="pill on" onClick=${createAndAdd}>Ekle</button></div>`}
     </div>`}
     ${byCategory(inList).map(([c, list]) => html`
@@ -1222,9 +1280,7 @@ function ShoppingScreen({ ctx, embedded, personal }) {
         <div class="group-head"><span>${c}</span></div>
         <div class="card">
           ${list.map(i => html`<${SwipeRow} key=${i.id} onDelete=${() => actions.patch('shopping_items', i.id, { in_list: false, checked: false })}>
-            <button class="item" onClick=${() => actions.patch('shopping_items', i.id, { checked: !i.checked })}>
-              <span class=${'check' + (i.checked ? ' on' : '')}>${i.checked ? '✓' : ''}</span>
-              <span class=${'grow title' + (i.checked ? ' done' : '')}>${i.name}</span></button><//>`)}
+            <${ShopRow} item=${i} onToggle=${() => actions.patch('shopping_items', i.id, { checked: !i.checked })} onEdit=${() => setEditing(i)} /><//>`)}
         </div>
       </div>`)}
     ${!inList.length && html`<div class="card"><${Empty}>${personal ? 'Kişisel listen boş. Sadece sen görürsün; yukarıdan ürün ekle.' : 'Liste boş. Yukarıdan ürün arayıp ekle.'}<//></div>`}
@@ -1244,6 +1300,7 @@ function ShoppingScreen({ ctx, embedded, personal }) {
       </div>
     </div>`}
     ${tripOpen && html`<${TripSheet} ctx=${ctx} checked=${checked} onClose=${() => setTripOpen(false)} />`}
+    ${editing && html`<${ShopItemSheet} ctx=${ctx} item=${editing} onClose=${() => setEditing(null)} />`}
     ${openTrip && html`<${TripEditSheet} ctx=${ctx} trip=${openTrip} onClose=${() => setOpenTrip(null)} />`}
   </div>`;
 }

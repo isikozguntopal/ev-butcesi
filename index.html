@@ -622,6 +622,7 @@
     .item > .grow > .title, .item > .grow > .sub { display: block; }
     /* Düğme olan satırlar da tam genişlikte ve sola yaslı olsun (tutar en sağda) */
     button.item { width: 100%; text-align: left; }
+    .item.press { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
     /* Tarih ve ay kutuları uzun açıklamanın yanında ezilmesin */
     .field > span { min-width: 0; }
     .field > input[type="date"], .field > input[type="month"] { flex: 0 0 auto; width: auto; min-width: 128px; text-align: right; }
