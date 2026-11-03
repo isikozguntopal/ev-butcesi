@@ -40,6 +40,20 @@ async function sendTo(admin: Admin, userIds: string[], title: string, body: stri
 const AYLAR = ['Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran', 'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'];
 const tlFmt = (v: number) => new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY', maximumFractionDigits: 2 }).format(v);
 const mk = (d: string | null) => (d ? String(d).slice(0, 7) : '');
+const pad = (n: number) => String(n).padStart(2, '0');
+/** Maaş günü: ayın 5'i, hafta sonuysa takip eden pazartesi (uygulamadaki payday ile aynı) */
+const payday = (m: string) => {
+  const [y, mo] = m.split('-').map(Number);
+  const wd = new Date(Date.UTC(y, mo - 1, 5)).getUTCDay();
+  return `${m}-${pad(wd === 6 ? 7 : wd === 0 ? 6 : 5)}`;
+};
+const prevM = (m: string) => { const [y, mo] = m.split('-').map(Number); return mo === 1 ? `${y - 1}-12` : `${y}-${pad(mo - 1)}`; };
+/** Bütçe ayı: Kasım 2026'dan itibaren maaştan önceki günler önceki aya sayılır */
+const bm = (d: string | null) => {
+  if (!d) return '';
+  const s = String(d).slice(0, 10), m = s.slice(0, 7);
+  return s.length < 10 || m < '2026-11' || s >= payday(m) ? m : prevM(m);
+};
 // deno-lint-ignore no-explicit-any
 type Row = Record<string, any>;
 
@@ -57,7 +71,7 @@ function settlementOf(rows: { expenses: Row[]; installments: Row[]; fixed: Row[]
     }
     owe[it.payer_id === A ? B : A] += amount / 2;
   };
-  rows.expenses.filter(e => mk(e.pay_date || e.date) === m).forEach(e => add(e, Number(e.amount), true));
+  rows.expenses.filter(e => (e.pay_date ? mk(e.pay_date) : bm(e.date)) === m).forEach(e => add(e, Number(e.amount), true));
   rows.installments.filter(i => m >= mk(i.first_month) && m <= mk(i.last_month)).forEach(i => add(i, Number(i.monthly_amount), false));
   rows.fixed.forEach(f => add(f, Number(f.amount), false));
   const net = owe[A] - owe[B];

@@ -36,9 +36,21 @@ const plain = v => (Number(v) ? Number(v).toLocaleString('tr-TR', { useGrouping:
 const CATS = ['Market', 'Yeme-içme', 'Ulaşım', 'Ev ve faturalar', 'Kira', 'Giyim', 'Sağlık', 'Eğlence', 'Eğitim', 'Teknoloji', 'Diğer'];
 const AYLAR = ['Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran', 'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'];
 const pad = n => String(n).padStart(2, '0');
-const thisMonth = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`; };
-const today = () => { const d = new Date(); return `${thisMonth()}-${pad(d.getDate())}`; };
+/** Bugünün takvim tarihi ("2026-11-03") */
+const today = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
 const mk = d => (d ? String(d).slice(0, 7) : null);
+/** Kasım 2026'dan itibaren bütçe ayı maaş gününde başlar: maaştan önceki günler önceki aya sayılır */
+const PERIOD_START = '2026-11';
+/** Bir tarihin bütçe ayı: 3 Kasım (maaş 5 Kasım) → Ekim */
+const bm = d => {
+  if (!d) return null;
+  const s = String(d).slice(0, 10), m = s.slice(0, 7);
+  return s.length < 10 || m < PERIOD_START || s >= payday(m) ? m : addM(m, -1);
+};
+/** İçinde bulunduğumuz bütçe ayı (maaş yatana kadar önceki ay) */
+const thisMonth = () => bm(today());
+/** Bütçe ayının ilk günü */
+const monthStart = m => (m >= PERIOD_START ? payday(m) : `${m}-01`);
 function addM(k, n) {
   const [y, m] = k.split('-').map(Number);
   const t = y * 12 + (m - 1) + n;
@@ -64,7 +76,7 @@ const shortMonth = k => { const [y, m] = k.split('-').map(Number); return k.slic
 let ME = null;
 const paidKey = (m, who) => `${m}:${who}`;
 /** Harcamanın ödeneceği ay (hesaplaşma bu aya göre); ödeme tarihi yoksa harcama tarihi */
-const payMonth = e => mk(e.pay_date || e.date);
+const payMonth = e => (e.pay_date ? mk(e.pay_date) : bm(e.date));
 /** Kartı ödeyenin hesap kesim günü (Ayarlar > Kredi kartı). Kişinin kendi girdiği esas; girmediyse eşinin onun için girdiği. */
 const cutDayOf = (members, uid) => {
   const own = Number((members || []).find(m => m.user_id === uid)?.notify_prefs?.cut_day);
@@ -78,7 +90,9 @@ const settleDay = (date, cut) => `${addM(mk(date), cut && Number(String(date).sl
 /** O ay bu kişi ödedi mi? (Eski, kişisiz "YYYY-MM" tikleri de sayılır) */
 const isPaid = (item, m, who = ME) => {
   const p = item.paid_months || [];
-  return p.includes(paidKey(m, who)) || p.includes(m);
+  // Maaş günü kuralından önce girilen harcamalar takvim ayıyla tiklenmişti ("2026-11" → artık Ekim bütçesinde)
+  const cal = item.date && mk(item.date) !== m && bm(item.date) === m ? mk(item.date) : null;
+  return p.includes(paidKey(m, who)) || p.includes(m) || (cal != null && p.includes(paidKey(cal, who)));
 };
 
 const inst = {
@@ -129,7 +143,7 @@ function cardItems(rows, uid, m) {
   return [
     ...rows.installments.filter(i => inst.active(i, m) && i.payer_id === uid && onCardItem(i, 'installments')).map(it => ({ it, table: 'installments', kind: 'Taksit', amount: Number(it.monthly_amount) })),
     ...rows.fixed_payments.filter(f => f.payer_id === uid && onCardItem(f, 'fixed_payments')).map(it => ({ it, table: 'fixed_payments', kind: 'Her ay', amount: Number(it.amount) })),
-    ...rows.expenses.filter(e => mk(e.date) === m && e.payer_id === uid && onCardItem(e, 'expenses')).map(it => ({ it, table: 'expenses', kind: 'Harcama', amount: Number(it.amount) })),
+    ...rows.expenses.filter(e => bm(e.date) === m && e.payer_id === uid && onCardItem(e, 'expenses')).map(it => ({ it, table: 'expenses', kind: 'Harcama', amount: Number(it.amount) })),
   ];
 }
 
@@ -324,7 +338,7 @@ function ItemForm({ ctx, kind: initialKind, item, preset, month, onClose, onSave
   const [kind, setKind] = useState(initialKind);
   const [name, setName] = useState(src.name || '');
   const [amount, setAmount] = useState(Math.abs(Number(src.monthly_amount ?? src.amount ?? 0)));
-  const [date, setDate] = useState(src.date || (base === thisMonth() ? today() : `${base}-01`));
+  const [date, setDate] = useState(src.date || (base === thisMonth() ? today() : monthStart(base)));
   const [first, setFirst] = useState(mk(src.first_month) || base);
   const [last, setLast] = useState(mk(src.last_month) || addM(base, 2));
   const [shared, setShared] = useState(!!src.shared);
@@ -350,7 +364,7 @@ function ItemForm({ ctx, kind: initialKind, item, preset, month, onClose, onSave
   const table = KIND_TABLE[kind];
   // Ödeme şekli: kart (kart ödemesine dahil) / nakit / henüz ödenmedi (sadece harcama)
   const initialMethod = item
-    ? (onCardItem(item, table) ? 'card' : kind === 'expense' && !isPaid(item, mk(item.date)) ? 'unpaid' : 'cash')
+    ? (onCardItem(item, table) ? 'card' : kind === 'expense' && !isPaid(item, bm(item.date)) ? 'unpaid' : 'cash')
     : kind === 'fixed' || src.on_card === false ? 'cash' : 'card';
   let method = methodPick || initialMethod;
   if (method === 'unpaid' && kind !== 'expense') method = 'cash';
@@ -470,7 +484,7 @@ function ItemForm({ ctx, kind: initialKind, item, preset, month, onClose, onSave
             <small class="muted">${{
               settle: `Ödeme tarihi ${fmtDate(payDay)}: ${monthName(mk(payDay))} hesaplaşmasına girer, o ayın nakdinden düşer.${cut ? ` Kartın hesap kesim günü ${cut}; ${cut}'inden sonraki harcamalar bir sonraki ekstreye girer.` : ' Kartın hesap kesim günü girilmemiş (Ben > Ayarlar > Kredi kartı).'}`,
               now: 'Pay aynı gün gönderilir: hesaplaşmaya girmez, harcama ayının nakdinden düşer.',
-              legacy: `Şu an ${monthName(mk(date))} hesaplaşmasında. Değiştirmek için birini seç.`,
+              legacy: `Şu an ${monthName(bm(date))} hesaplaşmasında. Değiştirmek için birini seç.`,
             }[payMode]}</small>
           </div>`}
       </div>
@@ -485,7 +499,8 @@ function makeToggle(ctx, m) {
   const { uid, actions } = ctx;
   return (table, it) => {
     const p = it.paid_months || [];
-    const key = paidKey(m, uid);
+    // Harcama tikleri takvim ayıyla tutulur (eşe borç anahtarıyla aynı); bütçe ayı farklı olsa da isPaid ikisini de tanır
+    const key = paidKey(table === 'expenses' && it.date ? mk(it.date) : m, uid);
     const was = isPaid(it, m);
     if (was && (it.paid_months || []).includes(`${key}:settled`)) {
       alert('Bu ödeme hesaplaşmada gönderildi, işareti kaldırılamaz.');
@@ -501,7 +516,7 @@ function makeToggle(ctx, m) {
     const sentToPartner = !was && partnerPaid;
     actions.patch(table, it.id, {
       paid_months: was
-        ? p.filter(x => ![key, m, `${key}:settled`, `${key}:sent`].includes(x))
+        ? p.filter(x => ![key, paidKey(m, uid), m, `${key}:settled`, `${key}:sent`].includes(x))
         : [...p, key, ...(sentToPartner ? [`${key}:sent`] : [])],
       // Gönderdim: ödeme günü harcama günü olur; geri alınırsa hesaplaşma gününe döner
       ...(partnerPaid ? { pay_date: was ? settleDay(it.date, cutDayOf(ctx.members, it.payer_id)) : it.date } : {}),
@@ -547,8 +562,10 @@ function MonthScreen({ ctx }) {
     ? (card ? '💳 karta dahil, toplama eklenmez' : '💳 kartla') : null);
 
   // Ayın ilk 10 günü: bu ayın hesaplaşması (ayın 5'i) bekliyorsa hatırlat
-  const settle = m === thisMonth() && new Date().getDate() <= 10 ? settlementFor(rows, ctx.members, m) : null;
-  const settleDue = settle && settle.amount >= 1 && !rows.settlements.some(x => x.month === m && (x.sent_at || x.received_at));
+  // Hesaplaşma takvim ayının 5'inde yapılır (maaş yatmadan önceki günlerde bütçe ayı hâlâ önceki ay olsa da)
+  const sm = mk(today());
+  const settle = m === thisMonth() && new Date().getDate() <= 10 ? settlementFor(rows, ctx.members, sm) : null;
+  const settleDue = settle && settle.amount >= 1 && !rows.settlements.some(x => x.month === sm && (x.sent_at || x.received_at));
   const income = Number(fin.income) || 0;
   const carry = carryFor(rows, uid, m);
   const carryAmt = carry ? Number(carry.amount) || 0 : 0;
@@ -943,7 +960,7 @@ function SettleSummary({ ctx, s, rec, month, who, uid, onMark, onClose }) {
   /** Kaleme dokununca kaydın detayı (harcamada tik ayı harcama ayıdır) */
   const open = (table, id, amount) => {
     const it = (ctx.rows[table] || []).find(x => x.id === id);
-    if (it) setDetail({ rec: { it, table, kind: KIND_OF[table], amt: amount }, m: table === 'expenses' ? mk(it.date) : month });
+    if (it) setDetail({ rec: { it, table, kind: KIND_OF[table], amt: amount }, m: table === 'expenses' ? bm(it.date) : month });
   };
   const side = (debtor, creditor) => {
     const lines = s.lines.filter(l => l.payer === creditor);
@@ -1027,7 +1044,7 @@ function ReportView({ ctx }) {
     const c = card ? Number(card.amount) || 0 : 0;
     const ins = sumBy(rows.installments.filter(i => inst.active(i, m) && !coveredByCard(i, uid, card)), i => mine(i, i.monthly_amount));
     const fx = sumBy(rows.fixed_payments.filter(f => !coveredByCard(f, uid, card, 'fixed_payments')), f => mine(f, f.amount));
-    const ex = sumBy(rows.expenses.filter(e => mk(e.date) === m && !coveredByCard(e, uid, card, 'expenses')), e => mine(e, e.amount));
+    const ex = sumBy(rows.expenses.filter(e => bm(e.date) === m && !coveredByCard(e, uid, card, 'expenses')), e => mine(e, e.amount));
     return { m, card: c, inst: ins, fixed: fx, exp: ex, total: c + ins + fx + ex };
   });
   const grand = sumBy(perMonth, x => x.total);
@@ -1040,7 +1057,7 @@ function ReportView({ ctx }) {
     .sort((a, b) => b.value - a.value).slice(0, 6);
 
   const byName = {};
-  rows.expenses.filter(e => months.includes(mk(e.date))).forEach(e => {
+  rows.expenses.filter(e => months.includes(bm(e.date))).forEach(e => {
     const key = e.name.trim().toLocaleLowerCase('tr');
     const g = (byName[key] ||= { label: e.name.trim(), value: 0, n: 0 });
     g.value += mine(e, e.amount);
@@ -1051,13 +1068,13 @@ function ReportView({ ctx }) {
 
   const byCat = {};
   months.forEach(m => {
-    rows.expenses.filter(e => mk(e.date) === m).forEach(e => { const k = e.category || 'Diğer'; byCat[k] = (byCat[k] || 0) + mine(e, e.amount); });
+    rows.expenses.filter(e => bm(e.date) === m).forEach(e => { const k = e.category || 'Diğer'; byCat[k] = (byCat[k] || 0) + mine(e, e.amount); });
     rows.installments.filter(i => inst.active(i, m)).forEach(i => { const k = i.category || 'Diğer'; byCat[k] = (byCat[k] || 0) + mine(i, i.monthly_amount); });
   });
   rows.fixed_payments.forEach(f => { const k = f.category || 'Diğer'; byCat[k] = (byCat[k] || 0) + mine(f, f.amount) * months.length; });
   const catItems = Object.entries(byCat).map(([label, value]) => ({ label, value })).filter(x => x.value > 0).sort((a, b) => b.value - a.value);
 
-  const sharedT = sumBy(months, m => sumBy(rows.expenses.filter(e => e.shared && mk(e.date) === m), e => mine(e, e.amount))
+  const sharedT = sumBy(months, m => sumBy(rows.expenses.filter(e => e.shared && bm(e.date) === m), e => mine(e, e.amount))
     + sumBy(rows.installments.filter(i => i.shared && inst.active(i, m)), i => mine(i, i.monthly_amount))
     + sumBy(rows.fixed_payments.filter(f => f.shared), f => mine(f, f.amount)));
 
@@ -1965,9 +1982,9 @@ const REC_GROUPS = [
 
 /** Seçili ay için kayıt grupları. Yalnızca o aya ait kayıtlar gelir. */
 function recordGroups(rows, uid, m) {
-  const exps = rows.expenses.filter(e => mk(e.date) === m);
+  const exps = rows.expenses.filter(e => bm(e.date) === m);
   const insts = rows.installments.filter(i => inst.active(i, m));
-  const fixed = rows.fixed_payments.filter(f => !f.created_at || mk(f.created_at) <= m);
+  const fixed = rows.fixed_payments.filter(f => !f.created_at || bm(localDay(f.created_at)) <= m);
   const mkItem = (table, kind) => it => ({ it, table, kind, amt: Number(kind === 'installment' ? it.monthly_amount : it.amount) || 0 });
   const all = {
     'own-exp': exps.filter(e => !e.shared).map(mkItem('expenses', 'expense')),
@@ -2062,7 +2079,7 @@ function nakitBreakdown(rows, uid, m, income, members) {
   const cardAmt = card ? Number(card.amount) || 0 : 0;
   const res = { income, cardAmt, expense: 0, installment: 0, fixed: 0, meHalf: 0, pHalf: 0, items: { expense: [], installment: [], fixed: [] } };
   const items = [
-    ...rows.expenses.filter(e => mk(e.date) === m && !coveredByCard(e, uid, card, 'expenses')).map(it => ({ it, kind: 'expense', amt: Number(it.amount) || 0 })),
+    ...rows.expenses.filter(e => bm(e.date) === m && !coveredByCard(e, uid, card, 'expenses')).map(it => ({ it, kind: 'expense', amt: Number(it.amount) || 0 })),
     ...rows.installments.filter(i => inst.active(i, m) && !coveredByCard(i, uid, card)).map(it => ({ it, kind: 'installment', amt: Number(it.monthly_amount) || 0 })),
     ...rows.fixed_payments.filter(f => !coveredByCard(f, uid, card, 'fixed_payments')).map(it => ({ it, kind: 'fixed', amt: Number(it.amount) || 0 })),
   ];
@@ -2089,7 +2106,7 @@ function nakitBreakdown(rows, uid, m, income, members) {
   res.left = income - cardAmt - res.expense - res.installment - res.fixed + res.settle + res.carry;
   // Henüz ödenmedi: tiklenmemiş kendi nakit kalemlerim + henüz gönderilmemiş hesaplaşma borcum
   const settleOwed = settleIn < 0 && !prevDone ? -settleIn : 0;
-  const unpaidItems = ['expense', 'installment', 'fixed'].flatMap(k => res.items[k]).filter(({ it }) => !isPaid(it, it.date ? mk(it.date) : m, uid));
+  const unpaidItems = ['expense', 'installment', 'fixed'].flatMap(k => res.items[k]).filter(({ it }) => !isPaid(it, it.date ? bm(it.date) : m, uid));
   res.unpaid = Math.round((settleOwed + sumBy(unpaidItems, ({ amt }) => amt)) * 100) / 100;
   res.out = cardAmt + res.expense + res.installment + res.fixed + Math.max(0, -res.settle);
   return res;
@@ -2346,7 +2363,7 @@ function subscriptionsOf(rows, uid) {
   for (const [key, evs] of groups) {
     const last = evs[evs.length - 1];
     const linked = evs.map(e => (e.matched_table === 'fixed_payments' ? fixedById[e.matched_id] : null)).filter(Boolean).pop() || null;
-    const months = new Set(evs.map(e => mk(localDay(e.occurred_at))));
+    const months = new Set(evs.map(e => bm(localDay(e.occurred_at))));
     const brand = SUB_BRANDS.test(last.merchant);
     if (!linked && months.size < 2 && !brand) continue;
     // Zam: son çekim bir önceki çekimden ya da kayıttaki tutardan farklı
@@ -2366,7 +2383,7 @@ function SubscriptionsView({ ctx }) {
     const id = crypto.randomUUID ? crypto.randomUUID() : undefined;
     const ok = await actions.add('fixed_payments', {
       ...(id ? { id } : {}), name: name.trim(), amount: Number(s.last.amount), payer_id: uid, shared: false, split: 'half', category: 'Diğer',
-      on_card: true, paid_months: [paidKey(mk(localDay(s.last.occurred_at)), uid)],
+      on_card: true, paid_months: [paidKey(bm(localDay(s.last.occurred_at)), uid)],
     });
     if (ok === false) return;
     // Sonraki ay aynı işyeri bu kayıtla eşleştirilsin
@@ -2721,10 +2738,10 @@ const whenShort = t => new Date(t).toLocaleString('tr-TR', { day: 'numeric', mon
 function matchCandidates(ctx, ev) {
   const { rows, uid, members } = ctx;
   const day = localDay(ev.occurred_at);
-  const m = mk(day);
+  const m = bm(day);
   const from = localDay(Date.parse(day) - 40 * 86400000);
   const to = localDay(Date.parse(day) + 10 * 86400000);
-  const used = new Set((rows.bank_events || []).filter(e => e.status === 'matched' && e.id !== ev.id && (e.matched_table === 'expenses' || mk(localDay(e.occurred_at)) === m)).map(e => e.matched_id));
+  const used = new Set((rows.bank_events || []).filter(e => e.status === 'matched' && e.id !== ev.id && (e.matched_table === 'expenses' || bm(localDay(e.occurred_at)) === m)).map(e => e.matched_id));
   // Ekim 2026 öncesi aylar takip edilmedi; onların hesaplaşması önerilmez
   const settles = [addM(m, -1), m, addM(m, 1)].filter(month => month >= '2026-10').map(month => {
     const st = settlementFor(rows, members, month);
@@ -2741,7 +2758,7 @@ function matchCandidates(ctx, ev) {
   const learned = new Set(key ? (rows.bank_events || []).filter(e => e.id !== ev.id && e.matched_id && merchantKey(e.merchant) === key).map(e => e.matched_id) : []);
   const list = [
     ...rows.expenses.filter(e => e.payer_id === uid && Number(e.amount) > 0 && e.date >= from && e.date <= to
-      && (cash ? !e.on_card && !isPaid(e, mk(e.date), uid) : true))
+      && (cash ? !e.on_card && !isPaid(e, bm(e.date), uid) : true))
       .map(it => ({ it, table: 'expenses', kind: 'Harcama', amount: Number(it.amount), sub: fmtDate(it.date) })),
     ...rows.fixed_payments.filter(f => f.payer_id === uid && !isPaid(f, m, uid) && (cash ? !onCardItem(f, 'fixed_payments') : true))
       .map(it => ({ it, table: 'fixed_payments', kind: 'Her ay', amount: Number(it.amount), sub: monthName(m) })),
@@ -2793,7 +2810,7 @@ function BankInboxSheet({ ctx, events, onNew, onClose }) {
       // Kartta görülen aylık ödeme kartla ödeniyor demektir
       if (ev.kind === 'card' && c.table === 'fixed_payments' && !c.it.on_card) p.on_card = true;
       // Nakit ödeme yapıldı: kaydı "ödendi" işaretle
-      const key = paidKey(mk(day), ctx.uid);
+      const key = paidKey(c.table === 'expenses' && c.it.date ? mk(c.it.date) : bm(day), ctx.uid);
       const pm = c.it.paid_months || [];
       if (!pm.includes(key)) p.paid_months = [...pm, key];
     }
@@ -2811,7 +2828,7 @@ function BankInboxSheet({ ctx, events, onNew, onClose }) {
     const id = crypto.randomUUID ? crypto.randomUUID() : undefined;
     const ok = await actions.add('fixed_payments', {
       ...(id ? { id } : {}), name: name.trim(), amount: ev.amount, payer_id: ctx.uid, shared: false, split: 'half', category: 'Diğer',
-      on_card: ev.kind === 'card', paid_months: [paidKey(mk(localDay(ev.occurred_at)), ctx.uid)],
+      on_card: ev.kind === 'card', paid_months: [paidKey(bm(localDay(ev.occurred_at)), ctx.uid)],
     });
     if (ok === false) return;
     await done(ev, { status: 'matched', matched_table: 'fixed_payments', matched_id: id ?? null });
@@ -2821,7 +2838,7 @@ function BankInboxSheet({ ctx, events, onNew, onClose }) {
   const isCardPay = ev.kind === 'out' && ev.merchant === 'Kredi kartı ödemesi';
   const manualPay = (() => { try { const x = JSON.parse(localStorage.getItem('tf-cardpay-manual') || 'null'); return x && x.day === localDay(ev.occurred_at) ? x : null; } catch { return null; } })();
   async function cardPay() {
-    const m = mk(localDay(ev.occurred_at));
+    const m = bm(localDay(ev.occurred_at));
     const prev = Number(cardFor(ctx.rows, ctx.uid, m)?.amount) || 0;
     if (!confirm(`${monthName(m)} kart ödemesi olarak kaydedilsin mi?${prev ? `\n\nBu ay daha önce ${tl(prev)} girilmiş; toplam ${tl(prev + ev.amount)} olur.` : ''}`)) return;
     // SMS'te limit yazıyorsa banka bağlantısı limiti zaten güncelledi; ikinci kez düşülmesin
@@ -3195,7 +3212,7 @@ function App() {
     ${!askCard && askCarry && html`<${CarrySheet} ctx=${ctx} ask=${askCarry} onClose=${() => setAskCarry(null)} />`}
     ${!askCard && !askCarry && bankOpen && !bankNew && !SHOW && bankPending.length > 0 && html`
       <${BankInboxSheet} ctx=${ctx} events=${bankPending} onNew=${ev => setBankNew(ev)} onClose=${() => setBankOpen(false)} />`}
-    ${bankNew && html`<${ItemForm} ctx=${ctx} kind="expense" month=${mk(localDay(bankNew.occurred_at))}
+    ${bankNew && html`<${ItemForm} ctx=${ctx} kind="expense" month=${bm(localDay(bankNew.occurred_at))}
       preset=${{ name: bankNew.merchant || (bankNew.kind === 'card' ? 'Kart harcaması' : 'Giden para'), amount: bankNew.amount, date: localDay(bankNew.occurred_at), on_card: bankNew.kind === 'card' }}
       onSaved=${() => actions.patch('bank_events', bankNew.id, { status: 'added' })} onClose=${() => setBankNew(null)} />`}
     <${QuickAdd} onTap=${() => setQuick(true)} />
