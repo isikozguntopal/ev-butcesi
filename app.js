@@ -575,6 +575,9 @@ function MonthScreen({ ctx }) {
   const prev = addM(m, -1);
   const prevLeft = !carry && prev >= '2026-10' ? Math.max(0, Math.round(nakitLeftFor(rows, uid, prev, income, ctx.members))) : 0;
   const left = b.left + prevLeft;
+  // Üst karttaki hesap: gelir + geçen aydan gelen − giden = kalan (giden, aşağıdaki kırmızı kalemlerin toplamı)
+  const settleGot = Math.max(0, b.settle);
+  const spent = Math.round((income + carryAmt + prevLeft + settleGot - left) * 100) / 100;
   // Sadece bu ayın kendi artısı (devir/geçen aydan kalan hariç)
   const net = b.left - b.carry;
   // Bankanın e-postayla bildirdiği son bakiye (sadece bu ay ekranında); fark = banka − uygulamaya göre şu an olması gereken
@@ -636,10 +639,13 @@ function MonthScreen({ ctx }) {
         </div>
         ${!income && html`<div class="sub">Ben → Birikimim bölümüne aylık gelirini yaz</div>`}
         <div class="rows">
-          <div class="row"><span>Gelir${prePay && income > 0 ? html`<small class="muted"> · maaş günü ${new Date(payday(m)).toLocaleDateString('tr-TR', { day: 'numeric', month: 'long' })}</small>` : ''}</span><b>${tl(income)}</b></div>
-          ${carryAmt !== 0 && html`<div class="row"><span>${AYLAR[Number(prev.slice(5)) - 1]} ayından devir</span><b>${tl(carryAmt)}</b></div>`}
-          ${prevLeft > 0 && html`<div class="row"><span>${AYLAR[Number(prev.slice(5)) - 1]} ayından kalan</span><b>${tl(prevLeft)}</b></div>`}
-          ${bank != null && html`
+          <div class="row"><span>Gelir${prePay && income > 0 ? html`<small class="muted"> · maaş günü ${new Date(payday(m)).toLocaleDateString('tr-TR', { day: 'numeric', month: 'long' })}</small>` : ''}</span><b class=${income > 0 ? 'pos' : ''}>${signed(income).text}</b></div>
+          ${carryAmt !== 0 && html`<div class="row"><span>${AYLAR[Number(prev.slice(5)) - 1]} ayından devir</span><b class=${signed(carryAmt).tone}>${signed(carryAmt).text}</b></div>`}
+          ${prevLeft > 0 && html`<div class="row"><span>${AYLAR[Number(prev.slice(5)) - 1]} ayından kalan</span><b class="pos">${signed(prevLeft).text}</b></div>`}
+          ${settleGot > 0 && html`<div class="row"><span>Hesaplaşmadan gelen</span><b class="pos">${signed(settleGot).text}</b></div>`}
+          ${spent >= 0.01 && html`<div class="row"><span>Giden<small class="muted"> · aşağıdaki kalemler</small></span><b class="neg">${signed(-spent).text}</b></div>`}
+          <div class="row total"><span>= Kalan</span><b class=${left < 0 ? 'neg' : 'pos'}>${tl(left)}</b></div>
+          ${bank != null && html`<div class="row-gap"></div>
             <div class="row"><span><i class="live" aria-hidden="true"></i>Bankadaki bakiye<small class="muted"> · ${whenShort(fin.bank_balance_at)}</small></span><b>${tl(bank)}</b></div>
             ${Math.abs(bankDiff) >= 1 && html`<div class="row"><span>Uygulamayla fark</span>
               <span class="flow-right"><b class=${bankDiff < 0 ? 'neg' : 'pos'}>${signed(bankDiff).text}</b><button class="flow-btn" aria-label="Bakiyeyi eşitle" onClick=${() => setBalOpen(true)}>›</button></span></div>`}`}
