@@ -553,14 +553,17 @@ function MonthScreen({ ctx }) {
   const carry = carryFor(rows, uid, m);
   const carryAmt = carry ? Number(carry.amount) || 0 : 0;
   const b = nakitBreakdown(rows, uid, m, income, ctx.members);
-  const left = b.left;
+  // Devir kararı (maaştan sonra sorulur) verilene kadar geçen aydan kalan nakit bu aya geçmiş sayılır
+  const prev = addM(m, -1);
+  const prevLeft = !carry && prev >= '2026-10' ? Math.max(0, Math.round(nakitLeftFor(rows, uid, prev, income, ctx.members))) : 0;
+  const left = b.left + prevLeft;
+  // Sadece bu ayın kendi artısı (devir/geçen aydan kalan hariç)
+  const net = b.left - b.carry;
   // Bankanın e-postayla bildirdiği son bakiye (sadece bu ay ekranında); fark = banka − uygulamaya göre şu an olması gereken
   const bank = m === thisMonth() && fin.bank_balance != null ? Number(fin.bank_balance) : null;
-  // Maaş yatmadan önce bankada gelir yok, geçen aydan kalan para var (devir ancak maaştan sonra sorulur)
+  // Maaş yatmadan önce bankada bu ayın geliri yok
   const prePay = m === thisMonth() && today() < payday(m);
-  const prev = addM(m, -1);
-  const prevLeft = !carry && prev >= '2026-10' ? nakitLeftFor(rows, uid, prev, income, ctx.members) : 0;
-  const expected = b.left + b.unpaid - (prePay ? income : 0) + prevLeft;
+  const expected = left + b.unpaid - (prePay ? income : 0);
   const bankDiff = bank != null ? Math.round((bank - expected) * 100) / 100 : 0;
 
   const toggle = makeToggle(ctx, m);
@@ -572,7 +575,8 @@ function MonthScreen({ ctx }) {
   const debtNow = sumBy(rows.installments, i => share(i, Number(i.monthly_amount), uid) * inst.remaining(i, thisMonth()));
   const say = !income ? 'Merhaba! Önce Ben → Birikimim bölümüne gelirini yazalım mı? 🥕'
     : allPaid ? 'Bu ayın bütün ödemeleri tamam, harikasınız! 🎉'
-    : left >= 0 ? `Bu ay ${tl(left)} artıyor, süpersiniz! ✨`
+    : net >= 0 ? `Bu ay ${tl(net)} artıyor, süpersiniz! ✨`
+    : left >= 0 ? `Bu ay gelirden ${tl(-net)} fazla harcandı, geçen aydan kalan kapatıyor 🙂`
     : `Eyvah, ${tl(-left)} eksideyiz 🙈`;
   const settledTag = it => ((it.paid_months || []).includes(`${paidKey(m, uid)}:settled`) ? 'hesaplaşmada gönderildi 🔒' : null);
   const subOf = (extra, it) => [extra, sharedLabel(it, ctx), partnerTag(it), settledTag(it)].filter(Boolean).join(' · ');
@@ -609,7 +613,8 @@ function MonthScreen({ ctx }) {
         ${!income && html`<div class="sub">Ben → Birikimim bölümüne aylık gelirini yaz</div>`}
         <div class="rows">
           <div class="row"><span>Gelir${prePay && income > 0 ? html`<small class="muted"> · maaş günü ${new Date(payday(m)).toLocaleDateString('tr-TR', { day: 'numeric', month: 'long' })}</small>` : ''}</span><b>${tl(income)}</b></div>
-          ${carryAmt !== 0 && html`<div class="row"><span>Önceki aydan devir</span><b>${tl(carryAmt)}</b></div>`}
+          ${carryAmt !== 0 && html`<div class="row"><span>${AYLAR[Number(prev.slice(5)) - 1]} ayından devir</span><b>${tl(carryAmt)}</b></div>`}
+          ${prevLeft > 0 && html`<div class="row"><span>${AYLAR[Number(prev.slice(5)) - 1]} ayından kalan</span><b>${tl(prevLeft)}</b></div>`}
           ${bank != null && html`
             <div class="row"><span><i class="live" aria-hidden="true"></i>Bankadaki bakiye<small class="muted"> · ${whenShort(fin.bank_balance_at)}</small></span><b>${tl(bank)}</b></div>
             ${Math.abs(bankDiff) >= 1 && html`<div class="row"><span>Uygulamayla fark</span>
