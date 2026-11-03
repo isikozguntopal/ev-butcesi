@@ -561,11 +561,12 @@ function MonthScreen({ ctx }) {
   const cardTag = it => (it.payer_id === uid && onCardItem(it, it.monthly_amount != null ? 'installments' : it.date ? 'expenses' : 'fixed_payments')
     ? (card ? '💳 karta dahil, toplama eklenmez' : '💳 kartla') : null);
 
-  // Ayın ilk 10 günü: bu ayın hesaplaşması (ayın 5'i) bekliyorsa hatırlat
-  // Hesaplaşma takvim ayının 5'inde yapılır (maaş yatmadan önceki günlerde bütçe ayı hâlâ önceki ay olsa da)
-  const sm = mk(today());
-  const settle = m === thisMonth() && new Date().getDate() <= 10 ? settlementFor(rows, ctx.members, sm) : null;
-  const settleDue = settle && settle.amount >= 1 && !rows.settlements.some(x => x.month === sm && (x.sent_at || x.received_at));
+  // Bütçe ayının hesaplaşması maaş günü yapılır: maaştan sonraki 10 gün içinde bekliyorsa hatırlat,
+  // yapıldıysa ay boyunca ne gönderildiğini göster (maaştan önceki günlerde bir sonraki ayınki gösterilmez)
+  const settleRec = m === thisMonth() ? rows.settlements.find(x => x.month === m && (x.sent_at || x.received_at)) : null;
+  const inWindow = m === thisMonth() && Date.parse(today()) - Date.parse(monthStart(m)) < 10 * 86400000;
+  const settle = inWindow && !settleRec ? settlementFor(rows, ctx.members, m) : null;
+  const settleDue = settle && settle.amount >= 1;
   const income = Number(fin.income) || 0;
   const carry = carryFor(rows, uid, m);
   const carryAmt = carry ? Number(carry.amount) || 0 : 0;
@@ -614,6 +615,12 @@ function MonthScreen({ ctx }) {
         <span class="banner-icon">💸</span>
         <span class="grow"><b>Hesaplaşma zamanı</b><span class="sub">${ctx.names[settle.from] || 'Eşin'} → ${ctx.names[settle.to] || 'Eşin'} · ${tl(settle.amount)}</span></span>
         <span class="pill on">Gör</span>
+      </button>`}
+    ${settleRec && Number(settleRec.amount) >= 1 && html`
+      <button class="banner" onClick=${ctx.goSettle}>
+        <span class="banner-icon">✅</span>
+        <span class="grow"><b>Hesaplaşma yapıldı</b><span class="sub">${ctx.names[settleRec.from_id] || 'Eşin'} → ${ctx.names[settleRec.to_id] || 'Eşin'} · ${tl(Number(settleRec.amount))} · ${new Date(settleRec.sent_at || settleRec.received_at).toLocaleDateString('tr-TR', { day: 'numeric', month: 'long' })}</span></span>
+        <span class="pill">Gör</span>
       </button>`}
 
     <div class="carousel" onTouchStart=${onTouchStart} onTouchEnd=${onTouchEnd}>
