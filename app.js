@@ -585,7 +585,6 @@ function MonthScreen({ ctx }) {
   // Maaş yatmadan önce bankada bu ayın geliri yok
   const prePay = m === thisMonth() && today() < payday(m);
   const expected = left + b.unpaid - (prePay ? income : 0);
-  const bankDiff = bank != null ? Math.round((bank - expected) * 100) / 100 : 0;
 
   const toggle = makeToggle(ctx, m);
   const partner = ctx.members.find(x => x.user_id !== uid);
@@ -646,9 +645,8 @@ function MonthScreen({ ctx }) {
           ${spent >= 0.01 && html`<div class="row"><span>Giden<small class="muted"> · aşağıdaki kalemler</small></span><b class="neg">${signed(-spent).text}</b></div>`}
           <div class="row total"><span>= Kalan</span><b class=${left < 0 ? 'neg' : 'pos'}>${tl(left)}</b></div>
           ${bank != null && html`<div class="row-gap"></div>
-            <div class="row"><span><i class="live" aria-hidden="true"></i>Bankadaki bakiye<small class="muted"> · ${whenShort(fin.bank_balance_at)}</small></span><b>${tl(bank)}</b></div>
-            ${Math.abs(bankDiff) >= 1 && html`<div class="row"><span>Uygulamayla fark</span>
-              <span class="flow-right"><b class=${bankDiff < 0 ? 'neg' : 'pos'}>${signed(bankDiff).text}</b><button class="flow-btn" aria-label="Bakiyeyi eşitle" onClick=${() => setBalOpen(true)}>›</button></span></div>`}`}
+            <div class="row"><span>Son banka bakiyesi<small class="muted"> · ${whenShort(fin.bank_balance_at)}</small></span><b>${tl(bank)}</b></div>
+            <${BankSinceRows} ctx=${ctx} />`}
         </div>
       </div>
           <${OzetGroups} ctx=${ctx} m=${m} view="nakit" />
@@ -2874,7 +2872,7 @@ function BankInboxSheet({ ctx, events, onNew, onClose }) {
         ${ev.kind === 'card' || isCardPay
           ? Number(fin.card_limit) > 0 && html`<div class="modal-bal"><span>Kullanılabilir limit${fin.card_used_at ? html`<small class="muted"> · ${fmtDate(fin.card_used_at)}</small>` : ''}</span>
               <b>${tl(Math.max(0, Number(fin.card_limit) - cardUsedNowFor(fin, ctx.rows, ctx.uid)))}</b></div>`
-          : fin.bank_balance != null && html`<div class="modal-bal"><span>Bankadaki bakiye<small class="muted"> · ${whenShort(fin.bank_balance_at)}</small></span><b>${tl(fin.bank_balance)}</b></div>`}
+          : fin.bank_balance != null && html`<div class="modal-bal"><span>Son banka bakiyesi<small class="muted"> · ${whenShort(fin.bank_balance_at)}</small></span><b>${tl(fin.bank_balance)}</b></div>`}
         ${isCardPay && manualPay && html`<div class="hint">Bugün uygulamadan ${tl(manualPay.amount)} kart ödemesi girdin. Bu aynı ödemeyse "Yok say" de.</div>`}
         ${top && !isCardPay && html`<div class="suggest">
           <div class="muted small">${top.score === 3 ? 'Geçen sefer bu işyerini bununla eşleştirdin' : top.score === 2 ? 'İşyeri adı bu kayıtla uyuşuyor' : 'Tutarı birebir aynı'}</div>
@@ -2902,6 +2900,35 @@ function BankInboxSheet({ ctx, events, onNew, onClose }) {
         </div>`}
       </div>
     </div>`;
+}
+
+/** Son banka bakiyesinden sonra hesaptan çıkan/giren paralar: bankanın bildirdiği hareketler (yok sayılanlar hariç)
+ *  ve sonradan elle girilen nakit harcamalar (bir banka hareketiyle eşleşenler iki kez sayılmaz). Kart harcamaları hesaptan düşmez. */
+function bankSince(rows, fin, uid) {
+  if (fin.bank_balance == null || !fin.bank_balance_at) return { list: [], now: null };
+  const at = Date.parse(fin.bank_balance_at);
+  const after = t => t && Date.parse(t) > at;
+  const ev = (rows.bank_events || []).filter(e => e.owner_id === uid && (e.kind === 'out' || e.kind === 'in') && e.status !== 'ignored' && after(e.occurred_at));
+  const linked = new Set(ev.filter(e => e.matched_id).map(e => e.matched_id));
+  // "Harcama olarak eklendi" hareketlerin oluşturduğu kayıt bağlı tutulmuyor: aynı tutarlı elle kayıt bir kez düşülür
+  const added = ev.filter(e => e.status === 'added').map(e => Number(e.amount));
+  const manual = rows.expenses.filter(e => e.payer_id === uid && Number(e.amount) > 0 && !onCardItem(e, 'expenses') && after(e.created_at)
+    && !linked.has(e.id) && !/bakiye eşitleme/.test(e.name || ''))
+    .filter(e => { const i = added.indexOf(Number(e.amount)); if (i < 0) return true; added.splice(i, 1); return false; });
+  const list = [
+    ...ev.map(e => ({ id: e.id, name: e.merchant || BANK_KIND[e.kind], at: e.occurred_at, amt: e.kind === 'in' ? Number(e.amount) : -Number(e.amount) })),
+    ...manual.map(e => ({ id: e.id, name: e.name, at: e.created_at, amt: -Number(e.amount) })),
+  ].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  return { list, now: Math.round((Number(fin.bank_balance) + sumBy(list, x => x.amt)) * 100) / 100 };
+}
+
+/** Son banka bakiyesinin altında: o saatten sonraki hareketler ve tahmini güncel bakiye */
+function BankSinceRows({ ctx }) {
+  const { list, now } = bankSince(ctx.rows, ctx.fin, ctx.uid);
+  if (!list.length) return null;
+  return html`
+    ${list.map(x => html`<div class="row since" key=${x.id}><span>${x.name}<small class="muted"> · ${whenShort(x.at)}</small></span><b class=${x.amt > 0 ? 'pos' : 'neg'}>${signed(x.amt).text}</b></div>`)}
+    <div class="row since-now"><span>Tahmini şu an</span><b>${tl(now)}</b></div>`;
 }
 
 const BANK_STATUS = { pending: 'Bekliyor', added: 'Harcama olarak eklendi', matched: 'Eşleştirildi', ignored: 'Yok sayıldı' };
@@ -2935,8 +2962,9 @@ function BankHistoryView({ ctx }) {
     </div>`;
   return html`
     ${fin.bank_balance != null && html`<div class="card hero">
-      <div class="muted">Bankadaki bakiye · ${whenShort(fin.bank_balance_at)}</div>
+      <div class="muted">Son banka bakiyesi · ${whenShort(fin.bank_balance_at)}</div>
       <div class="big">${tl(fin.bank_balance)}</div>
+      <div class="rows"><${BankSinceRows} ctx=${ctx} /></div>
     </div>`}
     <${Group} title=${`Bekleyenler (${pending.length})`}>
       ${pending.map(row)}
