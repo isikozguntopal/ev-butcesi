@@ -47,8 +47,16 @@ const bm = d => {
   const s = String(d).slice(0, 10), m = s.slice(0, 7);
   return s.length < 10 || m < PERIOD_START || s >= payday(m) ? m : addM(m, -1);
 };
-/** İçinde bulunduğumuz bütçe ayı (maaş yatana kadar önceki ay) */
-const thisMonth = () => bm(today());
+/** Bir anın bütçe günü: maaş günü öğlen 12'ye kadar maaş henüz yatmamış sayılır, bir önceki güne yazılır */
+const budgetDay = (t = new Date()) => {
+  const d = new Date(t);
+  const s = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`, m = s.slice(0, 7);
+  if (m < PERIOD_START || s !== payday(m) || d.getHours() >= 12) return s;
+  const y = new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1);
+  return `${y.getFullYear()}-${pad(y.getMonth() + 1)}-${pad(y.getDate())}`;
+};
+/** İçinde bulunduğumuz bütçe ayı (maaş günü öğlen 12'ye kadar önceki ay) */
+const thisMonth = () => bm(budgetDay());
 /** Bütçe ayının ilk günü */
 const monthStart = m => (m >= PERIOD_START ? payday(m) : `${m}-01`);
 function addM(k, n) {
@@ -338,7 +346,7 @@ function ItemForm({ ctx, kind: initialKind, item, preset, month, onClose, onSave
   const [kind, setKind] = useState(initialKind);
   const [name, setName] = useState(src.name || '');
   const [amount, setAmount] = useState(Math.abs(Number(src.monthly_amount ?? src.amount ?? 0)));
-  const [date, setDate] = useState(src.date || (base === thisMonth() ? today() : monthStart(base)));
+  const [date, setDate] = useState(src.date || (base === thisMonth() ? budgetDay() : monthStart(base)));
   const [first, setFirst] = useState(mk(src.first_month) || base);
   const [last, setLast] = useState(mk(src.last_month) || addM(base, 2));
   const [shared, setShared] = useState(!!src.shared);
@@ -577,7 +585,9 @@ function MonthScreen({ ctx }) {
   const left = b.left + prevLeft;
   // Üst karttaki hesap: gelir + geçen aydan gelen − giden = kalan (giden, aşağıdaki kırmızı kalemlerin toplamı)
   const settleGot = Math.max(0, b.settle);
-  const spent = Math.round((income + carryAmt + prevLeft + settleGot - left) * 100) / 100;
+  // Eksi tutarlı kayıtlar (bankadan "bakiyeme ekle" ile gelen para, bakiye eşitleme) gider değil, gelen paradır
+  const extraIn = -sumBy(b.items.expense.filter(x => x.amt < 0), x => x.amt);
+  const spent = Math.round((income + carryAmt + prevLeft + settleGot + extraIn - left) * 100) / 100;
   // Sadece bu ayın kendi artısı (devir/geçen aydan kalan hariç)
   const net = b.left - b.carry;
   // Bankanın e-postayla bildirdiği son bakiye (sadece bu ay ekranında); fark = banka − uygulamaya göre şu an olması gereken
@@ -642,6 +652,7 @@ function MonthScreen({ ctx }) {
           ${carryAmt !== 0 && html`<div class="row"><span>${AYLAR[Number(prev.slice(5)) - 1]} ayından devir</span><b class=${signed(carryAmt).tone}>${signed(carryAmt).text}</b></div>`}
           ${prevLeft > 0 && html`<div class="row"><span>${AYLAR[Number(prev.slice(5)) - 1]} ayından kalan</span><b class="pos">${signed(prevLeft).text}</b></div>`}
           ${settleGot > 0 && html`<div class="row"><span>Hesaplaşmadan gelen</span><b class="pos">${signed(settleGot).text}</b></div>`}
+          ${extraIn >= 0.01 && html`<div class="row"><span>Gelen para</span><b class="pos">${signed(extraIn).text}</b></div>`}
           ${spent >= 0.01 && html`<div class="row"><span>Giden<small class="muted"> · aşağıdaki kalemler</small></span><b class="neg">${signed(-spent).text}</b></div>`}
           <div class="row total"><span>= Kalan</span><b class=${left < 0 ? 'neg' : 'pos'}>${tl(left)}</b></div>
           ${bank != null && html`<div class="row-gap"></div>
@@ -689,7 +700,7 @@ function BalanceSheet({ ctx, expected, note, initial, onClose }) {
     if (!touched || busy || !diff) return;
     setBusy(true);
     const ok = await actions.add('expenses', {
-      name: 'Diğer (bakiye eşitleme)', amount: diff, date: today(), shared: false, split: 'half',
+      name: 'Diğer (bakiye eşitleme)', amount: diff, date: budgetDay(), shared: false, split: 'half',
       payer_id: uid, paid_months: [paidKey(thisMonth(), uid)],
     });
     if (ok !== false) { celebrate('Bakiye eşitlendi!'); onClose(); }
@@ -1995,7 +2006,7 @@ const REC_GROUPS = [
 function recordGroups(rows, uid, m) {
   const exps = rows.expenses.filter(e => bm(e.date) === m);
   const insts = rows.installments.filter(i => inst.active(i, m));
-  const fixed = rows.fixed_payments.filter(f => !f.created_at || bm(localDay(f.created_at)) <= m);
+  const fixed = rows.fixed_payments.filter(f => !f.created_at || bm(budgetDay(f.created_at)) <= m);
   const mkItem = (table, kind) => it => ({ it, table, kind, amt: Number(kind === 'installment' ? it.monthly_amount : it.amount) || 0 });
   const all = {
     'own-exp': exps.filter(e => !e.shared).map(mkItem('expenses', 'expense')),
@@ -2134,12 +2145,13 @@ function cardUsedNowFor(fin, rows, uid) {
 /** Açılır grup: başlık ve toplam; dokununca aşağı açılır */
 const OzetGroup = ({ id, title, total, open, onToggle, children, sign = 'out', note }) => {
   const v = Number(total) || 0;
-  const plus = sign === 'in' || (sign === 'auto' && v >= 0);
+  // Giden kalemlerde eksi tutar (gelen para, bakiye eşitleme) artı görünür
+  const sv = sign === 'in' ? signed(v, true) : sign === 'auto' ? signed(v, v >= 0) : signed(-v);
   return html`
     <div class="group" id=${id ? `og-${id}` : undefined}>
       <button class="group-head fold" onClick=${onToggle} aria-expanded=${open}>
         <span><span class=${'chev' + (open ? ' open' : '')}>›</span>${title}${note && html`<small class="g-note">${note}</small>`}</span>
-        <span class=${'g-total ' + signed(v, plus).tone}>${signed(v, plus).text}</span>
+        <span class=${'g-total ' + sv.tone}>${sv.text}</span>
       </button>
       ${open && html`<div class="card">${children}</div>`}
     </div>`;
@@ -2162,7 +2174,7 @@ function OzetItem({ ctx, m, it, table, kind, amt, open, onToggle, sign = 'out', 
             it.shared && `ortak, ${paidBy}`,
             status && html`<${Chip} status=${status} />`,
           ].filter(Boolean).flatMap((x, i) => (i ? [' · ', x] : [x]))}</span></span>
-        <span class=${'amt ' + signed(amt, sign === 'in').tone}>${signed(amt, sign === 'in').text}</span>
+        <span class=${'amt ' + (sign === 'in' ? signed(amt, true) : signed(-amt)).tone}>${(sign === 'in' ? signed(amt, true) : signed(-amt)).text}</span>
       </button>
       ${open && html`<div class="detail-inline">
         <div class="row pad"><span>Ne zaman açıldı</span><b>${fmtDate(started)}</b></div>
@@ -2374,7 +2386,7 @@ function subscriptionsOf(rows, uid) {
   for (const [key, evs] of groups) {
     const last = evs[evs.length - 1];
     const linked = evs.map(e => (e.matched_table === 'fixed_payments' ? fixedById[e.matched_id] : null)).filter(Boolean).pop() || null;
-    const months = new Set(evs.map(e => bm(localDay(e.occurred_at))));
+    const months = new Set(evs.map(e => bm(budgetDay(e.occurred_at))));
     const brand = SUB_BRANDS.test(last.merchant);
     if (!linked && months.size < 2 && !brand) continue;
     // Zam: son çekim bir önceki çekimden ya da kayıttaki tutardan farklı
@@ -2394,7 +2406,7 @@ function SubscriptionsView({ ctx }) {
     const id = crypto.randomUUID ? crypto.randomUUID() : undefined;
     const ok = await actions.add('fixed_payments', {
       ...(id ? { id } : {}), name: name.trim(), amount: Number(s.last.amount), payer_id: uid, shared: false, split: 'half', category: 'Diğer',
-      on_card: true, paid_months: [paidKey(bm(localDay(s.last.occurred_at)), uid)],
+      on_card: true, paid_months: [paidKey(bm(budgetDay(s.last.occurred_at)), uid)],
     });
     if (ok === false) return;
     // Sonraki ay aynı işyeri bu kayıtla eşleştirilsin
@@ -2748,11 +2760,11 @@ const whenShort = t => new Date(t).toLocaleString('tr-TR', { day: 'numeric', mon
  *  Kart: benim kart/harcama kayıtlarım. Giden para: nakit kayıtlarım + göndereceğim hesaplaşma. Gelen para: alacağım hesaplaşma. */
 function matchCandidates(ctx, ev) {
   const { rows, uid, members } = ctx;
-  const day = localDay(ev.occurred_at);
+  const day = budgetDay(ev.occurred_at);
   const m = bm(day);
   const from = localDay(Date.parse(day) - 40 * 86400000);
   const to = localDay(Date.parse(day) + 10 * 86400000);
-  const used = new Set((rows.bank_events || []).filter(e => e.status === 'matched' && e.id !== ev.id && (e.matched_table === 'expenses' || bm(localDay(e.occurred_at)) === m)).map(e => e.matched_id));
+  const used = new Set((rows.bank_events || []).filter(e => e.status === 'matched' && e.id !== ev.id && (e.matched_table === 'expenses' || bm(budgetDay(e.occurred_at)) === m)).map(e => e.matched_id));
   // Ekim 2026 öncesi aylar takip edilmedi; onların hesaplaşması önerilmez
   const settles = [addM(m, -1), m, addM(m, 1)].filter(month => month >= '2026-10').map(month => {
     const st = settlementFor(rows, members, month);
@@ -2801,7 +2813,7 @@ function BankInboxSheet({ ctx, events, onNew, onClose }) {
   if (!ev) return null;
 
   async function match(c) {
-    const day = localDay(ev.occurred_at);
+    const day = budgetDay(ev.occurred_at);
     if (c.table === 'settlements') {
       const kind = ev.kind === 'out' ? 'sent' : 'received';
       if (!confirm(`${c.it.name} ${kind === 'sent' ? '"Gönderildi"' : '"Alındı"'} olarak işaretlensin mi?${Math.abs(c.amount - ev.amount) >= 1 ? `\n\nHesaplaşma ${tl(c.amount)}, bankadaki tutar ${tl(ev.amount)}.` : ''}`)) return;
@@ -2839,17 +2851,29 @@ function BankInboxSheet({ ctx, events, onNew, onClose }) {
     const id = crypto.randomUUID ? crypto.randomUUID() : undefined;
     const ok = await actions.add('fixed_payments', {
       ...(id ? { id } : {}), name: name.trim(), amount: ev.amount, payer_id: ctx.uid, shared: false, split: 'half', category: 'Diğer',
-      on_card: ev.kind === 'card', paid_months: [paidKey(bm(localDay(ev.occurred_at)), ctx.uid)],
+      on_card: ev.kind === 'card', paid_months: [paidKey(bm(budgetDay(ev.occurred_at)), ctx.uid)],
     });
     if (ok === false) return;
     await done(ev, { status: 'matched', matched_table: 'fixed_payments', matched_id: id ?? null });
     celebrate('Aylık ödeme eklendi!');
   }
+  // Gelen para hesaplaşma değilse (kendi hesabından ya da başka biri gönderdi): o bütçe ayının nakdine eklenir
+  async function addIncome() {
+    const day = budgetDay(ev.occurred_at);
+    const id = crypto.randomUUID ? crypto.randomUUID() : undefined;
+    const ok = await actions.add('expenses', {
+      ...(id ? { id } : {}), name: 'Gelen para', amount: -Number(ev.amount), date: day, shared: false, split: 'half',
+      payer_id: ctx.uid, category: 'Diğer', paid_months: [paidKey(mk(day), ctx.uid)],
+    });
+    if (ok === false) return;
+    await done(ev, { status: 'matched', matched_table: 'expenses', matched_id: id ?? null });
+    celebrate(`${monthName(bm(day))} bakiyesine eklendi!`);
+  }
   const isIn = ev.kind === 'in';
   const isCardPay = ev.kind === 'out' && ev.merchant === 'Kredi kartı ödemesi';
   const manualPay = (() => { try { const x = JSON.parse(localStorage.getItem('tf-cardpay-manual') || 'null'); return x && x.day === localDay(ev.occurred_at) ? x : null; } catch { return null; } })();
   async function cardPay() {
-    const m = bm(localDay(ev.occurred_at));
+    const m = bm(budgetDay(ev.occurred_at));
     const prev = Number(cardFor(ctx.rows, ctx.uid, m)?.amount) || 0;
     if (!confirm(`${monthName(m)} kart ödemesi olarak kaydedilsin mi?${prev ? `\n\nBu ay daha önce ${tl(prev)} girilmiş; toplam ${tl(prev + ev.amount)} olur.` : ''}`)) return;
     // SMS'te limit yazıyorsa banka bağlantısı limiti zaten güncelledi; ikinci kez düşülmesin
@@ -2883,6 +2907,7 @@ function BankInboxSheet({ ctx, events, onNew, onClose }) {
           ${isCardPay && html`<button class="primary" onClick=${cardPay}>💳 Kart ödemesi olarak kaydet</button>`}
           <button class=${isCardPay || top ? 'primary ghost' : 'primary'} onClick=${() => setOpen(!open)}>🔗 ${isIn ? 'Hesaplaşma geldi' : top ? 'Hayır, başka bir kayıtla eşleştir' : 'Bir kayıtla eşleştir'}</button>
           ${!isIn && html`<button class="primary ghost" onClick=${() => onNew(ev)}>+ ${ev.kind === 'card' ? 'Yeni harcama olarak ekle' : 'Harcama olarak ekle'}</button>`}
+          ${isIn && html`<button class="primary ghost" onClick=${addIncome}>➕ Bakiyeme ekle<small class="muted"> · ${monthName(bm(budgetDay(ev.occurred_at)))}</small></button>`}
           ${!isIn && !isCardPay && html`<button class="primary ghost" onClick=${addFixed}>🔁 Yeni aylık ödeme olarak ekle</button>`}
           <button class="link" onClick=${() => done(ev, { status: 'ignored' })}>${ev.kind === 'card' ? 'Yok say' : ev.kind === 'out' ? 'Kendi hesabıma gönderdim · yok say' : 'Kendi hesabımdan geldi · yok say'}</button>
         </div>
@@ -3253,8 +3278,8 @@ function App() {
     ${!askCard && askCarry && html`<${CarrySheet} ctx=${ctx} ask=${askCarry} onClose=${() => setAskCarry(null)} />`}
     ${!askCard && !askCarry && bankOpen && !bankNew && !SHOW && bankPending.length > 0 && html`
       <${BankInboxSheet} ctx=${ctx} events=${bankPending} onNew=${ev => setBankNew(ev)} onClose=${() => setBankOpen(false)} />`}
-    ${bankNew && html`<${ItemForm} ctx=${ctx} kind="expense" month=${bm(localDay(bankNew.occurred_at))}
-      preset=${{ name: bankNew.merchant || (bankNew.kind === 'card' ? 'Kart harcaması' : 'Giden para'), amount: bankNew.amount, date: localDay(bankNew.occurred_at), on_card: bankNew.kind === 'card' }}
+    ${bankNew && html`<${ItemForm} ctx=${ctx} kind="expense" month=${bm(budgetDay(bankNew.occurred_at))}
+      preset=${{ name: bankNew.merchant || (bankNew.kind === 'card' ? 'Kart harcaması' : 'Giden para'), amount: bankNew.amount, date: budgetDay(bankNew.occurred_at), on_card: bankNew.kind === 'card' }}
       onSaved=${() => actions.patch('bank_events', bankNew.id, { status: 'added' })} onClose=${() => setBankNew(null)} />`}
     <${QuickAdd} onTap=${() => setQuick(true)} />
     ${quick && html`<${ItemForm} ctx=${ctx} kind="expense" month=${thisMonth()} onClose=${() => setQuick(false)} />`}
