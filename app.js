@@ -3153,7 +3153,10 @@ function bankSince(rows, fin, uid) {
   if (fin.bank_balance == null || !fin.bank_balance_at) return { list: [], now: null };
   const at = Date.parse(fin.bank_balance_at);
   const after = t => t && Date.parse(t) > at;
-  const ev = (rows.bank_events || []).filter(e => e.owner_id === uid && (e.kind === 'out' || e.kind === 'in') && e.status !== 'ignored' && after(e.occurred_at));
+  // Bakiyeyle aynı mesajda gelen hareket ("1.500 TL gönderildi, bakiye 29.943") bakiyeye zaten dahil: tekrar düşülmez
+  const balMsgs = new Set((rows.bank_events || []).filter(e => e.owner_id === uid && e.kind === 'balance' && e.msg_id).map(e => e.msg_id));
+  const ev = (rows.bank_events || []).filter(e => e.owner_id === uid && (e.kind === 'out' || e.kind === 'in') && e.status !== 'ignored' && after(e.occurred_at)
+    && !(e.msg_id && balMsgs.has(e.msg_id)));
   const linked = new Set(ev.filter(e => e.matched_id).map(e => e.matched_id));
   // "Harcama olarak eklendi" hareketlerin oluşturduğu kayıt bağlı tutulmuyor: aynı tutarlı elle kayıt bir kez düşülür
   const added = ev.filter(e => e.status === 'added').map(e => Number(e.amount));
