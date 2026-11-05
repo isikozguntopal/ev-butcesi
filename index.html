@@ -547,6 +547,12 @@
     .rows .row.since { padding: 6px 0 6px 14px; border-top: 0; font-size: 14px; }
     .rows .row.since b { font-weight: 600; }
     .rows .row.since-now { font-weight: 650; }
+    .stmt-extra + .stmt-extra { border-top: 1px solid var(--line); }
+    .stmt-extra .row { border-top: 0; }
+    .stmt-extra .suggest { margin: 0 16px 4px; }
+    .suggest-actions { display: flex; gap: 8px; margin-top: 8px; }
+    .stmt-acts { justify-content: flex-end; gap: 16px; padding-top: 0; }
+    .link.neg { color: var(--neg); }
     .live { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--pos); margin-right: 7px; vertical-align: 1px;
       animation: ping 2.4s infinite; }
     @keyframes ping { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--pos) 60%, transparent); } 70%, 100% { box-shadow: 0 0 0 7px transparent; } }

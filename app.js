@@ -2982,11 +2982,13 @@ function sameMerchant(a, b) {
   return words(a).some(w => kb.includes(w.replace(/[^a-zçğıöşü]/g, ''))) || words(b).some(w => ka.includes(w.replace(/[^a-zçğıöşü]/g, '')));
 }
 const dayDiff = (a, b) => Math.abs(Date.parse(String(a).slice(0, 10)) - Date.parse(String(b).slice(0, 10))) / 86400000;
-const near = (a, b) => Math.abs(Number(a) - Number(b)) < 0.01;
+const near = (a, b) => Math.round(Number(a) * 100) === Math.round(Number(b) * 100);
+/** Aylık ödemede küçük fark (zam, kuruş yuvarlama): en fazla %5 ya da 5 TL */
+const close = (a, b) => Math.abs(Number(a) - Number(b)) <= Math.max(5, Number(b) * 0.05);
 
 /** Ekstre satırının kimliği: elle eşleştirmeler bununla hatırlanır */
 const stmtSig = x => `${x.date}|${x.amount}|${x.name}`;
-const LS_LINKS = 'tf-stmt-links', LS_UNDO = 'tf-stmt-undo';
+const LS_LINKS = 'tf-stmt-links', LS_UNDO = 'tf-stmt-undo', LS_NOPE = 'tf-stmt-nope';
 const lsGet = (k, d) => { try { return JSON.parse(localStorage.getItem(k) || 'null') ?? d; } catch { return d; } };
 const lsSet = (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, JSON.stringify(v)); } catch { /* yok say */ } };
 const recAmount = (it, table) => Number(table === 'installments' ? it.monthly_amount : it.amount);
@@ -2994,13 +2996,16 @@ const recAmount = (it, table) => Number(table === 'installments' ? it.monthly_am
 /** Ekstredeki her işlemi uygulamadaki kart kayıtlarımla karşılaştırır.
  *  status: ok (aynı) · diff (aynı kayıt, tutar ya da taksit sayısı farklı) · missing (uygulamada yok) · payment (karta ödeme, bilgi)
  *  links: elle eşleştirilen satırlar { imza: { table, id } } */
-function compareStatement(st, rows, uid, links = {}) {
+function compareStatement(st, rows, uid, links = {}, nope = []) {
   const cut = st.info.cut || st.items.reduce((m, i) => (i.date > m ? i.date : m), '');
   const from = `${addM(mk(cut), -1)}${cut.slice(7)}`;
   // Ekstre, ödeme ayının kart kayıtları: 1 Kasım kesimli ekstre Kasım'da ödenir
   const payM = st.info.due ? mk(st.info.due) : mk(cut);
   const learned = (rows.bank_events || []).filter(e => e.matched_id && e.merchant);
-  const nameOf = (it, s) => sameMerchant(s, it.name) || learned.some(e => e.matched_id === it.id && sameMerchant(s, e.merchant));
+  // Daha önce elle eşleştirilen ekstre satırlarının işyeri adı da öğrenilir: "TURKCELL" bir kez "İnternet fatura"ya bağlandıysa sonraki aylarda da bağlanır
+  const linkNames = Object.values(links).filter(l => l && l.name);
+  const nameOf = (it, s) => sameMerchant(s, it.name) || learned.some(e => e.matched_id === it.id && sameMerchant(s, e.merchant))
+    || linkNames.some(l => l.id === it.id && sameMerchant(s, l.name));
   const exps = rows.expenses.filter(e => e.payer_id === uid && onCardItem(e, 'expenses') && Number(e.amount) > 0);
   const fixed = rows.fixed_payments.filter(f => f.payer_id === uid && onCardItem(f, 'fixed_payments'));
   const insts = rows.installments.filter(i => i.payer_id === uid && onCardItem(i, 'installments') && inst.active(i, payM));
@@ -3035,11 +3040,28 @@ function compareStatement(st, rows, uid, links = {}) {
     if (fOk) return take(fOk, 'fixed_payments', 'ok', x);
     const d = pool.filter(e => nameOf(e, x.name)).sort(byDay)[0];
     if (d) return take(d, 'expenses', 'diff', x);
-    const fD = fx.find(f => nameOf(f, x.name));
+    const fD = fx.find(f => nameOf(f, x.name)) || fx.filter(f => close(f.amount, x.amount)).sort((a, b) => Math.abs(a.amount - x.amount) - Math.abs(b.amount - x.amount))[0];
     return fD ? take(fD, 'fixed_payments', 'diff', x) : { ...x, status: 'missing' };
   });
-  // Dönem içinde uygulamada kartla girilmiş ama ekstrede olmayanlar
-  const extra = exps.filter(e => !used.has(e.id) && e.date > from && e.date <= cut);
+  // Uygulamada kartla görünen ama ekstrede olmayanlar: dönem içindeki harcamalar, bu ay taksiti düşen taksitler, her ay olanlar
+  const extra = [
+    ...exps.filter(e => !used.has(e.id) && e.date > from && e.date <= cut).map(it => ({ it, table: 'expenses', amount: Number(it.amount), sub: fmtDate(it.date) })),
+    ...insts.filter(i => !used.has(i.id)).map(it => ({ it, table: 'installments', amount: Number(it.monthly_amount), sub: `taksit ${diffM(inst.first(it), payM) + 1}/${inst.total(it)}` })),
+    ...fixed.filter(f => !used.has(f.id)).map(it => ({ it, table: 'fixed_payments', amount: Number(it.amount), sub: 'her ay' })),
+  ];
+  // "Aynı işlem mi?" önerisi: tutarı yakın ekstre satırı (aylık ödemede %10, diğerlerinde %3). Önce eşleşmemiş satırlar.
+  const no = new Set(nope);
+  const RANK = { missing: 0, diff: 1, ok: 2 };
+  const taken = new Set();
+  for (const e of extra) {
+    const tol = e.table === 'fixed_payments' ? 0.1 : 0.03;
+    const cands = lines.filter(x => x.status !== 'payment' && !links[stmtSig(x)] && !taken.has(x.line) && !no.has(`${stmtSig(x)}|${e.it.id}`)
+      && (e.table === 'installments' ? !!x.inst : !x.inst)
+      && (e.table !== 'expenses' || dayDiff(e.it.date, x.date) <= 7)
+      && Math.abs(x.amount - e.amount) <= Math.max(1, e.amount * tol));
+    cands.sort((a, b) => (RANK[a.status] - RANK[b.status]) || Math.abs(a.amount - e.amount) - Math.abs(b.amount - e.amount));
+    if (cands[0]) { e.sug = cands[0]; taken.add(cands[0].line); }
+  }
   // Kalan taksit: bu ayınkinden sonraki aylar
   const instLeft = sumBy(insts, i => Number(i.monthly_amount) * diffM(payM, inst.last(i)));
   return { lines, extra, payM, from, cut, instLeft, used, nameOf };
@@ -3095,7 +3117,10 @@ function StatementView({ ctx }) {
   const [links, setLinksState] = useState(() => lsGet(LS_LINKS, {}));
   const [undo, setUndoState] = useState(() => lsGet(LS_UNDO, null));
   const [matching, setMatching] = useState(null);
+  const [picking, setPicking] = useState(null);
+  const [nope, setNopeState] = useState(() => lsGet(LS_NOPE, []));
   const ref = useRef(null);
+  const setNope = v => { setNopeState(v); lsSet(LS_NOPE, v); };
   const setLinks = v => { setLinksState(v); lsSet(LS_LINKS, v); };
   const setUndo = v => { setUndoState(v); lsSet(LS_UNDO, v); };
 
@@ -3123,6 +3148,7 @@ function StatementView({ ctx }) {
       if (op.t === 'patch' && (rows[op.table] || []).some(r => r.id === op.id)) await actions.patch(op.table, op.id, op.prev);
       if (op.t === 'fin') await saveFin({ ...fin, ...op.prev });
       if (op.t === 'link') { nextLinks = { ...nextLinks }; if (op.prev) nextLinks[op.sig] = op.prev; else delete nextLinks[op.sig]; }
+      if (op.t === 'readd') await actions.add(op.table, op.row);
     }
     setLinks(nextLinks);
     setUndo(null);
@@ -3147,7 +3173,7 @@ function StatementView({ ctx }) {
     ${undoBar && html`<div class="card">${undoBar}</div>`}
     <p class="hint">PDF telefonunda okunur, hiçbir yere gönderilmez ve saklanmaz.</p>`;
 
-  const c = compareStatement(st, rows, uid, links);
+  const c = compareStatement(st, rows, uid, links, nope);
   const keyOf = x => `${x.line}`;
   const byStatus = s => c.lines.filter(x => x.status === s);
   const ok = byStatus('ok'), diff = byStatus('diff'), missing = byStatus('missing'), pays = byStatus('payment');
@@ -3211,11 +3237,57 @@ function StatementView({ ctx }) {
     const { patch, prev } = stmtFix(x, r, c.payM);
     const ops = [{ t: 'link', sig, prev: links[sig] || null }];
     if (await actions.patch(r.table, r.it.id, patch) !== false) ops.push({ t: 'patch', table: r.table, id: r.it.id, prev });
-    setLinks({ ...links, [sig]: { table: r.table, id: r.it.id } });
+    setLinks({ ...links, [sig]: { table: r.table, id: r.it.id, name: x.name } });
     setUndo({ label: `${x.name} → ${r.it.name} eşleştirildi`, at: new Date().toISOString(), ops });
     celebrate('Eşleştirildi!');
     setBusy(false);
   }
+
+  /** "Aynı işlem mi?" → Evet: ekstre satırı bu kayda bağlanır (tutar farklıysa "Tutarı farklı"da düzeltilebilir) */
+  async function linkSame(x, e) {
+    if (busy) return;
+    const sig = stmtSig(x);
+    setPicking(null);
+    const ops = [{ t: 'link', sig, prev: links[sig] || null }];
+    setLinks({ ...links, [sig]: { table: e.table, id: e.it.id, name: x.name } });
+    // Satır daha önce başka bir kayıtla eşleşmişse (ör. ekstreden aktarılmış kopya) o kayıt fazla kalır: silinsin mi?
+    const old = x.rec && x.rec.it.id !== e.it.id ? x.rec : null;
+    if (old && confirm(`Uygulamada bu işlem için ayrıca "${old.it.name}" (${tl(old.amount)}) kaydı da var. Aynı işlem iki kez sayılmasın diye silinsin mi?`)) {
+      setBusy(true);
+      const { ...row } = old.it;
+      if (await actions.del(old.table, old.it.id) !== false) ops.push({ t: 'readd', table: old.table, row });
+      setBusy(false);
+    }
+    setUndo({ label: `${x.name} → ${e.it.name} aynı işlem sayıldı${ops.length > 1 ? `, ${old.it.name} silindi` : ''}`, at: new Date().toISOString(), ops });
+    celebrate('Eşleştirildi!');
+  }
+  const notSame = (x, e) => setNope([...nope, `${stmtSig(x)}|${e.it.id}`]);
+  /** Fazla girilmiş kaydı siler; geri alınabilir */
+  async function removeExtra(e) {
+    if (busy || !confirm(`"${e.it.name}" (${tl(e.amount)}) uygulamadan silinsin mi?`)) return;
+    setBusy(true);
+    const { ...row } = e.it;
+    if (await actions.del(e.table, e.it.id) !== false) {
+      setUndo({ label: `${e.it.name} silindi`, at: new Date().toISOString(), ops: [{ t: 'readd', table: e.table, row }] });
+    }
+    setBusy(false);
+  }
+  const KIND_TR = { expenses: 'Harcama', fixed_payments: 'Her ay', installments: 'Taksit' };
+  const extraRow = e => html`
+    <div class="stmt-extra" key=${e.table + e.it.id}>
+      <div class="row pad"><span>${e.it.name}<small class="muted"> · ${KIND_TR[e.table]} · ${e.sub}</small></span><b>${tl(e.amount)}</b></div>
+      ${e.sug && html`<div class="suggest">
+        <div class="small">Ekstredeki <b>${e.sug.name}</b> · ${fmtDate(e.sug.date)}${instTxt(e.sug)} · <b>${tl(e.sug.amount)}</b> ile aynı işlem mi?</div>
+        <div class="suggest-actions">
+          <button class="pill on" onClick=${() => linkSame(e.sug, e)}>Evet, aynı</button>
+          <button class="pill" onClick=${() => notSame(e.sug, e)}>Hayır</button>
+        </div>
+      </div>`}
+      <div class="row pad stmt-acts">
+        <button class="link small" onClick=${() => setPicking(e)}>Ekstreden seç</button>
+        <button class="link small neg" onClick=${() => removeExtra(e)}>Sil</button>
+      </div>
+    </div>`;
 
   const row = (x, check, extra) => html`
     <div class="item" key=${keyOf(x)}>
@@ -3296,11 +3368,20 @@ function StatementView({ ctx }) {
     ${ok.length > 0 && html`<${FoldGroup} id="stmt-ok" title="Doğru" count=${ok.length} total=${sumBy(ok, x => x.amount)}>${ok.map(x => row(x, false))}<//>`}
     ${pays.length > 0 && html`<${FoldGroup} id="stmt-pay" title="Karta yapılan ödemeler" count=${pays.length} total=${sumBy(pays, x => x.amount)}>
       ${pays.map(x => html`<div class="row pad" key=${keyOf(x)}><span>${x.name}<small class="muted"> · ${fmtDate(x.date)}</small></span><b class="pos">+ ${tl(x.amount)}</b></div>`)}<//>`}
-    ${c.extra.length > 0 && html`<${FoldGroup} id="stmt-extra" title="Uygulamada var, bu ekstrede yok" count=${c.extra.length}>
-      ${c.extra.map(e => html`<div class="row pad" key=${e.id}><span>${e.name}<small class="muted"> · ${fmtDate(e.date)}</small></span><b>${tl(e.amount)}</b></div>`)}
-      <div class="row pad"><small class="muted">Sonraki ekstreye kalmış ya da yanlış girilmiş olabilir; gerekirse Kayıtlar'dan düzelt.</small></div><//>`}
+    ${c.extra.length > 0 && html`<${Group} title=${`Uygulamada var, ekstrede yok (${c.extra.length})`}>
+      ${c.extra.map(extraRow)}
+      <div class="row pad"><small class="muted">Ekstrede farklı isimle geçiyorsa "Evet, aynı" ya da "Ekstreden seç" ile bağla; tutar farkı varsa "Tutarı farklı"da düzeltirsin. İki kez girildiyse sil. Bağladıkların sonraki aylarda da hatırlanır.</small></div><//>`}
     <button class="link small center-block" onClick=${() => ref.current.click()}>Başka bir hesap özeti seç</button>
     ${upload}
+    ${picking && html`<${Sheet} title="Ekstredeki hangi satır?" onClose=${() => setPicking(null)}>
+      <div class="card rows"><div class="row"><span>${picking.it.name}<small class="muted"> · ${KIND_TR[picking.table]} · ${picking.sub}</small></span><b>${tl(picking.amount)}</b></div></div>
+      <div class="card">
+        ${c.lines.filter(x => x.status !== 'payment').sort((a, b) => Math.abs(a.amount - picking.amount) - Math.abs(b.amount - picking.amount)).map(x => html`
+          <button class="item" key=${keyOf(x)} onClick=${() => linkSame(x, picking)}>
+            <span class="grow"><span class="title">${x.name}</span><span class="sub">${when(x)}${x.rec ? ` · şu an: ${x.rec.it.name}` : ' · eşleşmemiş'}</span></span>
+            <span class="amt">${tl(x.amount)}</span></button>`)}
+      </div>
+    <//>`}
     ${matching && html`<${StatementMatchSheet} ctx=${ctx} x=${matching} c=${c} onPick=${r => manualMatch(matching, r)} onClose=${() => setMatching(null)} />`}`;
 }
 
