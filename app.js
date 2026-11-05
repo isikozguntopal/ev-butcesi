@@ -171,13 +171,18 @@ const cardFor = (rows, uid, m) => rows.card_payments.find(c => c.owner_id === ui
 /** O ay ödenen ekstre kapandı mı: o ayın kart ödemesi en az asgari kadar. Asgari ekstreden (yüklendiyse) bilinir;
  *  bilinmiyorsa dönem borcunun %20'si. Borç da bilinmiyorsa herhangi bir kart ödemesi yeter. */
 const STMT_MIN = 'tf-stmt-min';
+/** O ay ödenecek ekstrenin asgari tutarı: yüklenen ekstreden; yoksa (bu ay ve gelecek ay için) dönem borcunun %20'si */
+const storedMin = payM => { try { const v = Number(JSON.parse(localStorage.getItem(STMT_MIN) || '{}')[payM]); return v > 0 ? v : null; } catch { return null; } };
+function cardMinFor(fin, payM, guess = true) {
+  const v = storedMin(payM);
+  if (v) return v;
+  const debt = Number(fin?.card_debt) || 0;
+  return guess && debt > 0 && payM >= thisMonth() && payM <= addM(thisMonth(), 1) ? Math.round(debt * 20) / 100 : null;
+}
 function cardStmtPaid(rows, fin, uid, payM) {
   const paid = Number(cardFor(rows, uid, payM)?.amount) || 0;
   if (!(paid > 0)) return false;
-  let min = null;
-  try { min = Number(JSON.parse(localStorage.getItem(STMT_MIN) || '{}')[payM]) || null; } catch { /* yok say */ }
-  const debt = Number(fin?.card_debt) || 0;
-  return paid + 0.005 >= (min ?? (debt ? debt * 0.2 : 0));
+  return paid + 0.005 >= (cardMinFor(fin, payM) ?? 0);
 }
 /** Kart kaydının ödendi durumu (Kayıtlar > Kredi kartı): elle tik yok, ekstrenin kart ödemesiyle belli olur.
  *  Görünen ay L'deki harcama ve aylık ödeme L+1'de ödenen ekstrededir; taksit o ayın kart ödemesindedir. */
@@ -2164,8 +2169,11 @@ function RecordDetail({ ctx, m, rec, onEdit, onClose }) {
 /** Nakit bakiyenin dökümü. Hesaplaşma satırı, ortak kalemlerin mahsuplaşmış net tutarıdır. */
 function nakitBreakdown(rows, uid, m, income, members) {
   const card = cardFor(rows, uid, m);
-  const cardAmt = card ? Number(card.amount) || 0 : 0;
-  const res = { income, cardAmt, expense: 0, installment: 0, fixed: 0, meHalf: 0, pHalf: 0, items: { expense: [], installment: [], fixed: [] } };
+  const cardPaid = card ? Number(card.amount) || 0 : 0;
+  // Bu ay ve sonrası: ekstrenin asgarisi en az ödenecek sayılır; daha fazla ödendiyse ödenen. Geçmiş aylarda ödenen esastır.
+  const cardMin = uid === SAL.uid && m >= thisMonth() ? cardMinFor(SAL.fin, m) : null;
+  const cardAmt = Math.max(cardPaid, cardMin || 0);
+  const res = { income, cardAmt, cardPaid, cardMin, expense: 0, installment: 0, fixed: 0, meHalf: 0, pHalf: 0, items: { expense: [], installment: [], fixed: [] } };
   const items = [
     ...rows.expenses.filter(e => bm(e.date) === m && !coveredByCard(e, uid, card, 'expenses')).map(it => ({ it, kind: 'expense', amt: Number(it.amount) || 0 })),
     ...rows.installments.filter(i => inst.active(i, m) && !coveredByCard(i, uid, card)).map(it => ({ it, kind: 'installment', amt: Number(it.monthly_amount) || 0 })),
@@ -2305,7 +2313,12 @@ function OzetGroups({ ctx, m, view, focus }) {
       Math.abs(b.settleIn) >= 1 && !settleDone ? (b.settleIn < 0 ? 'ödenmedi' : 'gelmedi') : null)}
     ${g('direct', 'Ay içinde gönderilen ortak paylar', b.settle - b.settleIn, html`
       ${(sCur?.sentDirect || []).map(l => html`<div class="row pad" key=${l.id}><span>${l.name}<small class="muted"> · ${paidBy(l.payer)} · ${l.when}</small></span><b>${tl(l.debt)}</b></div>`)}`, 'auto', !(sCur?.sentDirect || []).length)}
-    ${g('card', 'Kredi kartı ödemesi', b.cardAmt, html`<div class="row pad"><span>Bu ay yaptığın kart ödemesi</span><b>${tl(b.cardAmt)}</b></div>`, 'out', true)}
+    ${g('card', 'Kredi kartı ödemesi', b.cardAmt, html`
+      ${b.cardMin != null && html`<div class="row pad"><span>${storedMin(m) ? 'Ekstre asgari ödemesi' : 'Tahmini asgari ödeme'}<small class="muted"> · ${storedMin(m) ? 'en az bu kadar ödenmeli' : 'dönem borcunun %20\'si; ekstreyi yükleyince kesinleşir'}</small></span><b>${tl(b.cardMin)}</b></div>`}
+      <div class="row pad"><span>Bu ay yaptığın kart ödemesi</span><b>${tl(b.cardPaid)}</b></div>
+      ${b.cardMin != null && html`<div class="row pad"><small class="muted">${b.cardPaid + 0.005 >= b.cardMin
+        ? 'Asgari karşılandı ✓ · hesapta ödediğin tutar düşülür'
+        : `Hesapta asgari tutar düşülür · asgariye ${tl(Math.round((b.cardMin - b.cardPaid) * 100) / 100)} kaldı`}</small></div>`}`, 'out', true)}
     ${g('fixed', 'Aylık ödemeler', b.fixed, renderItems(itemsOf('fixed', b.items.fixed, 'fixed_payments', 'fixed')), 'out', !b.items.fixed.length, unpaidNote(b.items.fixed))}
     ${g('installment', 'Taksitler', b.installment, renderItems(itemsOf('installment', b.items.installment, 'installments', 'installment')), 'out', !b.items.installment.length, unpaidNote(b.items.installment))}
     ${g('expense', 'Harcamalar', b.expense, renderItems(itemsOf('expense', b.items.expense, 'expenses', 'expense')), 'out', !b.items.expense.length, unpaidNote(b.items.expense))}
@@ -2509,6 +2522,9 @@ function SubscriptionsView({ ctx }) {
 /** Taksit takvimi: önümüzdeki aylarda taksit yükü ve biten taksitler */
 function InstallmentCalendar({ ctx }) {
   const { rows, uid } = ctx;
+  // Ayın altında taksitler: dokununca açılır; bu ay açık başlar
+  const [open, setOpen] = useState(() => new Set([thisMonth()]));
+  const flip = m => setOpen(o => { const n = new Set(o); n.has(m) ? n.delete(m) : n.add(m); return n; });
   const now = thisMonth();
   const mineOf = i => share(i, Number(i.monthly_amount) || 0, uid);
   const active = rows.installments.filter(i => inst.last(i) >= now && mineOf(i) > 0);
@@ -2517,7 +2533,13 @@ function InstallmentCalendar({ ctx }) {
   for (let m = now; m <= end && months.length < 36; m = addM(m, 1)) {
     const load = sumBy(active.filter(i => inst.active(i, m)), mineOf);
     const ending = active.filter(i => inst.last(i) === m);
-    months.push({ m, load, ending, relief: sumBy(ending, mineOf) });
+    // O ay ödenen her taksit: kaçıncı taksit, ne kadar tamamlandı. Önce bitenler, sonra bitmeye yakın olanlar.
+    const items = active.filter(i => inst.active(i, m)).map(i => {
+      const n = inst.total(i), k = diffM(inst.first(i), m) + 1;
+      return { i, n, k, amt: mineOf(i), last: k === n };
+    }).sort((a, b) => (b.k / b.n - a.k / a.n) || b.amt - a.amt);
+    const starting = active.filter(i => inst.first(i) === m && m !== now);
+    months.push({ m, load, ending, items, starting, relief: sumBy(ending, mineOf) });
   }
   const max = Math.max(1, ...months.map(x => x.load));
   const first = months[0]?.load || 0;
@@ -2531,13 +2553,23 @@ function InstallmentCalendar({ ctx }) {
     <${Group} title="Ay ay taksit yükü">
       ${months.map(x => html`
         <div class="cal-row" key=${x.m}>
-          <div class="line"><span class="title">${shortMonth(x.m)}</span><b>${tl(x.load)}</b></div>
-          <div class="goal-bar"><i style=${`transform:scaleX(${x.load / max})`}></i></div>
-          ${x.ending.length > 0 && html`<div class="sub">🎉 ${x.ending.map(i => i.name).join(', ')} bitiyor · sonraki ay ${tl(x.relief)} rahatlarsınız</div>`}
+          <button class="cal-head" onClick=${() => flip(x.m)} aria-expanded=${open.has(x.m)}>
+            <div class="line"><span class="title"><span class=${'chev' + (open.has(x.m) ? ' open' : '')}>›</span>${shortMonth(x.m)}<small class="muted"> · ${x.items.length} taksit</small></span><b>${tl(x.load)}</b></div>
+            <div class="goal-bar"><i style=${`transform:scaleX(${x.load / max})`}></i></div>
+            ${x.ending.length > 0 && html`<div class="sub">🎉 ${x.ending.map(i => i.name).join(', ')} bitiyor · sonraki ay ${tl(x.relief)} rahatlarsınız</div>`}
+            ${x.starting.length > 0 && html`<div class="sub">🆕 ${x.starting.map(i => i.name).join(', ')} başlıyor · ${tl(sumBy(x.starting, mineOf))}</div>`}
+          </button>
+          ${open.has(x.m) && html`<div class="cal-items">
+            ${x.items.map(t => html`<div class=${'cal-item' + (t.last ? ' last' : '')} key=${t.i.id}>
+              <div class="line"><span>${t.i.name}<small class="muted"> · ${t.k}/${t.n}</small></span><b>${tl(t.amt)}</b></div>
+              <div class="goal-bar thin"><i style=${`transform:scaleX(${t.k / t.n})`}></i></div>
+              <div class="sub">${t.last ? `🎉 Son taksit · sonraki ay ${tl(t.amt)} rahatlarsınız` : `${t.n - t.k} taksit kaldı · ${monthName(inst.last(t.i))} bitiyor`}</div>
+            </div>`)}
+          </div>`}
         </div>`)}
       ${!months.length && html`<${Empty}>Devam eden taksit yok<//>`}
     <//>
-    <p class="hint">Tutarlar senin payın: ortak taksitlerin yarısı, kendi taksitlerinin tamamı.</p>`;
+    <p class="hint">Tutarlar senin payın: ortak taksitlerin yarısı, kendi taksitlerinin tamamı. Ayın çubuğu en yüklü aya göre; taksitlerin çubuğu kaçıncı taksitte olduğunu gösterir. Aya dokununca taksitleri açılır.</p>`;
 }
 
 function GoalForm({ ctx, item, onClose }) {
@@ -3629,7 +3661,7 @@ function App() {
   const [tab, setTab] = useState('month');
 
   // Ay geçişi maaşın bankaya yatmasına bağlı: budgetDay() kullanıcının banka kayıtlarına bakar
-  SAL.uid = user?.id; SAL.evs = rows?.bank_events || null; SAL.income = Number(fin?.income) || 0; SAL.members = members;
+  SAL.uid = user?.id; SAL.evs = rows?.bank_events || null; SAL.income = Number(fin?.income) || 0; SAL.members = members; SAL.fin = fin;
 
   const hist = useRef([]);
   const edge = useRef(null);

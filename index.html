@@ -588,6 +588,16 @@
     .item.goal { cursor: default; }
     .item.goal .grow { cursor: pointer; }
     .cal-row { padding: 12px 16px; border-top: 1px solid var(--line); }
+    .cal-row > .cal-head { display: block !important; width: 100% !important; text-align: left !important; background: none; border: 0; padding: 0; margin: 0; min-height: 0; color: inherit; font: inherit; cursor: pointer; box-shadow: none; }
+    .cal-head .sub { text-align: left; }
+    .cal-head .chev { display: inline-block; margin-right: 6px; transition: transform .2s; color: var(--muted); }
+    .cal-head .chev.open { transform: rotate(90deg); }
+    .cal-items { margin: 8px 0 2px 14px; padding-left: 12px; border-left: 2px solid var(--line); }
+    .cal-item { padding: 10px 0; }
+    .cal-item + .cal-item { border-top: 1px dashed var(--line); }
+    .cal-item .line { font-size: 15px; }
+    .cal-item.last .line b { color: var(--pos); }
+    .goal-bar.thin { height: 5px; margin: 6px 0 4px; }
     .card > .cal-row:first-child { border-top: 0; }
 
     /* Nasıl kullanılır: tam ekran anlatım */
