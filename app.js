@@ -48,7 +48,7 @@ const bm = d => {
   return s.length < 10 || m < PERIOD_START || s >= payday(m) ? m : addM(m, -1);
 };
 /** Maaşın yattığı an: App her çizimde kullanıcının banka kayıtlarını ve gelirini buraya koyar */
-const SAL = { uid: null, evs: null, income: 0 };
+const SAL = { uid: null, evs: null, income: 0, members: [] };
 const dayOf = t => { const d = new Date(t); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
 /** Maaş sayılacak en düşük giriş: gelirin yarısı (gelir girilmediyse 5.000) */
 const salaryMin = () => Math.max(5000, (Number(SAL.income) || 0) * 0.5);
@@ -111,6 +111,17 @@ const cutDayOf = (members, uid) => {
   for (const m of members || []) { const v = Number(m.notify_prefs?.cut_days?.[uid]); if (v) return v; }
   return null;
 };
+/** Kart harcamasının ekstre (harcama) ayı: kesim gününden sonraki harcama sonraki ekstreye girer.
+ *  Kesim 1: 6 Ekim ve 1 Kasım → Ekim (1 Kasım ekstresi), 3 Kasım → Kasım (1 Aralık ekstresi).
+ *  Kesim 25: 20 Ekim → Ekim, 28 Ekim → Kasım. Kesim günü bilinmiyorsa takvim ayı. O ekstre bir sonraki ay ödenir. */
+const cardMonthOf = (e, members = SAL.members) => {
+  const m = mk(e.date), cut = cutDayOf(members, e.payer_id);
+  if (!cut) return m;
+  const cm = Number(String(e.date).slice(8, 10)) > cut ? addM(m, 1) : m;
+  return cut <= 20 ? addM(cm, -1) : cm;
+};
+/** Kayıtlar'da harcamanın ayı: kartla ödenenler ekstre ayında, diğerleri bütçe ayında */
+const expMonth = e => (e.on_card === true ? cardMonthOf(e) : bm(e.date));
 /** Hesaplaşma günü: kart ekstresinin ödendiği ayın 5'i. Kesim gününden sonraki harcama bir sonraki ekstreye girer
  *  (kesim 25: 20 Ekim → 5 Kasım, 28 Ekim → 5 Aralık). Kesim günü bilinmiyorsa harcamadan sonraki ayın 5'i. */
 const settleDay = (date, cut) => `${addM(mk(date), cut && Number(String(date).slice(8, 10)) > cut ? 2 : 1)}-05`;
@@ -118,8 +129,11 @@ const settleDay = (date, cut) => `${addM(mk(date), cut && Number(String(date).sl
 const isPaid = (item, m, who = ME) => {
   const p = item.paid_months || [];
   // Maaş günü kuralından önce girilen harcamalar takvim ayıyla tiklenmişti ("2026-11" → artık Ekim bütçesinde)
-  const cal = item.date && mk(item.date) !== m && bm(item.date) === m ? mk(item.date) : null;
-  return p.includes(paidKey(m, who)) || p.includes(m) || (cal != null && p.includes(paidKey(cal, who)));
+  if (p.includes(paidKey(m, who)) || p.includes(m)) return true;
+  // Tarihli harcama tek bir aya aittir: takvim, bütçe ya da ekstre ayıyla tiklenmiş olması yeter
+  if (!item.date) return false;
+  const ms = [mk(item.date), bm(item.date), ...(item.on_card === true ? [cardMonthOf(item)] : [])];
+  return ms.some(x => p.includes(paidKey(x, who)));
 };
 
 const inst = {
@@ -170,7 +184,7 @@ function cardItems(rows, uid, m) {
   return [
     ...rows.installments.filter(i => inst.active(i, m) && i.payer_id === uid && onCardItem(i, 'installments')).map(it => ({ it, table: 'installments', kind: 'Taksit', amount: Number(it.monthly_amount) })),
     ...rows.fixed_payments.filter(f => f.payer_id === uid && onCardItem(f, 'fixed_payments')).map(it => ({ it, table: 'fixed_payments', kind: 'Her ay', amount: Number(it.amount) })),
-    ...rows.expenses.filter(e => bm(e.date) === m && e.payer_id === uid && onCardItem(e, 'expenses')).map(it => ({ it, table: 'expenses', kind: 'Harcama', amount: Number(it.amount) })),
+    ...rows.expenses.filter(e => e.payer_id === uid && onCardItem(e, 'expenses') && addM(cardMonthOf(e), 1) === m).map(it => ({ it, table: 'expenses', kind: 'Harcama', amount: Number(it.amount) })),
   ];
 }
 
@@ -527,7 +541,9 @@ function makeToggle(ctx, m) {
   return (table, it) => {
     const p = it.paid_months || [];
     // Harcama tikleri takvim ayıyla tutulur (eşe borç anahtarıyla aynı); bütçe ayı farklı olsa da isPaid ikisini de tanır
-    const key = paidKey(table === 'expenses' && it.date ? mk(it.date) : m, uid);
+    // Kendi kartımla ödenen harcama ekstre ayıyla tiklenir (kart ödemesiyle aynı anahtar)
+    const ownCard = table === 'expenses' && it.date && it.on_card === true && it.payer_id === uid;
+    const key = paidKey(table === 'expenses' && it.date ? (ownCard ? cardMonthOf(it) : mk(it.date)) : m, uid);
     const was = isPaid(it, m);
     if (was && (it.paid_months || []).includes(`${key}:settled`)) {
       alert('Bu ödeme hesaplaşmada gönderildi, işareti kaldırılamaz.');
@@ -543,7 +559,8 @@ function makeToggle(ctx, m) {
     const sentToPartner = !was && partnerPaid;
     actions.patch(table, it.id, {
       paid_months: was
-        ? p.filter(x => ![key, paidKey(m, uid), m, `${key}:settled`, `${key}:sent`].includes(x))
+        ? p.filter(x => ![key, paidKey(m, uid), m, `${key}:settled`, `${key}:sent`,
+          ...(table === 'expenses' && it.date ? [paidKey(mk(it.date), uid), paidKey(bm(it.date), uid), ...(ownCard ? [paidKey(cardMonthOf(it), uid)] : [])] : [])].includes(x))
         : [...p, key, ...(sentToPartner ? [`${key}:sent`] : [])],
       // Gönderdim: ödeme günü harcama günü olur; geri alınırsa hesaplaşma gününe döner
       ...(partnerPaid ? { pay_date: was ? settleDay(it.date, cutDayOf(ctx.members, it.payer_id)) : it.date } : {}),
@@ -800,6 +817,7 @@ async function saveCardPayment(ctx, month, paid) {
     const key = paidKey(month, uid);
     // Aylık ödemeler kartta görülünce (banka SMS'i eşleşince) ödendi olur; kart ödemesi onları işaretlemez
     for (const { it, table } of cardItems(rows, uid, month).filter(c => c.table !== 'fixed_payments')) {
+      const key = table === 'expenses' ? paidKey(cardMonthOf(it), uid) : paidKey(month, uid);
       if (!(it.paid_months || []).includes(key)) await actions.patch(table, it.id, { paid_months: [...(it.paid_months || []), key] });
     }
     if (!card) celebrate('Kart ödemesi girildi!');
@@ -2033,7 +2051,9 @@ const REC_GROUPS = [
 
 /** Seçili ay için kayıt grupları. Yalnızca o aya ait kayıtlar gelir. */
 function recordGroups(rows, uid, m) {
-  const exps = rows.expenses.filter(e => bm(e.date) === m);
+  // Kart harcamaları ekstre ayında; liste yeniden eskiye
+  const exps = rows.expenses.filter(e => expMonth(e) === m)
+    .sort((a, b) => (a.date === b.date ? String(b.created_at || '').localeCompare(String(a.created_at || '')) : a.date < b.date ? 1 : -1));
   const insts = rows.installments.filter(i => inst.active(i, m));
   const fixed = rows.fixed_payments.filter(f => !f.created_at || bm(budgetDay(f.created_at)) <= m);
   const mkItem = (table, kind) => it => ({ it, table, kind, amt: Number(kind === 'installment' ? it.monthly_amount : it.amount) || 0 });
@@ -3585,7 +3605,7 @@ function App() {
   const [tab, setTab] = useState('month');
 
   // Ay geçişi maaşın bankaya yatmasına bağlı: budgetDay() kullanıcının banka kayıtlarına bakar
-  SAL.uid = user?.id; SAL.evs = rows?.bank_events || null; SAL.income = Number(fin?.income) || 0;
+  SAL.uid = user?.id; SAL.evs = rows?.bank_events || null; SAL.income = Number(fin?.income) || 0; SAL.members = members;
 
   const hist = useRef([]);
   const edge = useRef(null);
