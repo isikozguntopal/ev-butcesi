@@ -908,7 +908,16 @@ function CardSheet({ ctx, month, prompt, onClose }) {
     if (busy) return;
     if (value == null && !(amount > 0)) return setErr('Ödediğin tutarı yaz (ödeme yoksa aşağıdan seç)');
     setBusy(true);
-    const ok = await saveCardPayment(ctx, month, value ?? amount);
+    const next = Number(value ?? amount) || 0, prev = Number(card?.amount) || 0;
+    // Ödeme tutarı değişince fark kullanılabilir limite yansır. Eski tutar ister limit güncellemesinden önce
+    // (bankanın limitinde) ister sonra (uygulamanın hesabında) sayılmış olsun, şu anki kullanılan = şimdiki + eski − yeni.
+    // Limit tarihi bugüne çekilir; böylece bu ödeme bir daha düşülmez.
+    const { fin, saveFin } = ctx;
+    const usedNow = cardUsedNowFor(fin, rows, uid);
+    const ok = await saveCardPayment(ctx, month, next);
+    if (ok !== false && Number(fin.card_limit) > 0 && Math.abs(next - prev) >= 0.01) {
+      await saveFin({ ...fin, card_used: Math.max(0, Math.round((usedNow + prev - next) * 100) / 100), card_used_at: today() });
+    }
     if (ok !== false) onClose();
     setBusy(false);
   }
@@ -2304,7 +2313,8 @@ function OzetGroups({ ctx, m, view, focus }) {
   const cardKind = k => cards.filter(c => c.kind === k);
 
   if (view === 'kart') return html`<div class="ozet-groups">
-    ${g('kpay', 'Bu ay karta yaptığın ödeme', b.cardAmt, html`<div class="row pad"><span>Kart borcundan düşer, limitin açılır</span><b>${tl(b.cardAmt)}</b></div>`, 'in', true)}
+    ${g('kpay', 'Bu ay karta yaptığın ödeme', b.cardPaid, html`<div class="row pad"><span>Kart borcundan düşer, limitin açılır</span><b>${tl(b.cardPaid)}</b></div>
+      ${b.cardMin != null && b.cardPaid + 0.005 < b.cardMin && html`<div class="row pad"><small class="muted">Asgari ${tl(b.cardMin)} · ${tl(Math.round((b.cardMin - b.cardPaid) * 100) / 100)} kaldı</small></div>`}`, 'in', true)}
     ${g('kfixed', 'Karttan çekilen aylık ödemeler', sumBy(cardKind('Her ay'), c => c.amount), renderItems(cardKind('Her ay').map(c => ({ ...c, key: itemKey('kfixed', c.it.id) })), x => (isPaid(x.it, m) ? SEEN : WAIT)), 'out', !cardKind('Her ay').length,
       (n => (n ? `${n} bekleniyor` : null))(cardKind('Her ay').filter(c => !isPaid(c.it, m)).length))}
     ${g('kinst', 'Karttaki taksitler', sumBy(cardKind('Taksit'), c => c.amount), renderItems(cardKind('Taksit').map(c => ({ ...c, key: itemKey('kinst', c.it.id) })), () => null), 'out', !cardKind('Taksit').length)}
