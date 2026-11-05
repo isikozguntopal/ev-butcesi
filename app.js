@@ -2984,9 +2984,17 @@ function sameMerchant(a, b) {
 const dayDiff = (a, b) => Math.abs(Date.parse(String(a).slice(0, 10)) - Date.parse(String(b).slice(0, 10))) / 86400000;
 const near = (a, b) => Math.abs(Number(a) - Number(b)) < 0.01;
 
+/** Ekstre satırının kimliği: elle eşleştirmeler bununla hatırlanır */
+const stmtSig = x => `${x.date}|${x.amount}|${x.name}`;
+const LS_LINKS = 'tf-stmt-links', LS_UNDO = 'tf-stmt-undo';
+const lsGet = (k, d) => { try { return JSON.parse(localStorage.getItem(k) || 'null') ?? d; } catch { return d; } };
+const lsSet = (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, JSON.stringify(v)); } catch { /* yok say */ } };
+const recAmount = (it, table) => Number(table === 'installments' ? it.monthly_amount : it.amount);
+
 /** Ekstredeki her işlemi uygulamadaki kart kayıtlarımla karşılaştırır.
- *  status: ok (aynı) · diff (aynı kayıt, tutar farklı) · missing (uygulamada yok) · payment (karta ödeme, bilgi) */
-function compareStatement(st, rows, uid) {
+ *  status: ok (aynı) · diff (aynı kayıt, tutar ya da taksit sayısı farklı) · missing (uygulamada yok) · payment (karta ödeme, bilgi)
+ *  links: elle eşleştirilen satırlar { imza: { table, id } } */
+function compareStatement(st, rows, uid, links = {}) {
   const cut = st.info.cut || st.items.reduce((m, i) => (i.date > m ? i.date : m), '');
   const from = `${addM(mk(cut), -1)}${cut.slice(7)}`;
   // Ekstre, ödeme ayının kart kayıtları: 1 Kasım kesimli ekstre Kasım'da ödenir
@@ -2997,14 +3005,25 @@ function compareStatement(st, rows, uid) {
   const fixed = rows.fixed_payments.filter(f => f.payer_id === uid && onCardItem(f, 'fixed_payments'));
   const insts = rows.installments.filter(i => i.payer_id === uid && onCardItem(i, 'installments') && inst.active(i, payM));
   const used = new Set();
-  const take = (it, table, status, x) => { used.add(it.id); return { ...x, status, rec: { it, table, amount: Number(table === 'installments' ? it.monthly_amount : it.amount) } }; };
+  const take = (it, table, status, x) => { used.add(it.id); return { ...x, status, rec: { it, table, amount: recAmount(it, table) } }; };
+  // Taksit sayısı da tutmalı: ekstrede 2/6 ise uygulamada 6 aylık taksit
+  const instSame = (i, x) => !x.inst || inst.total(i) === x.inst.n;
   const lines = st.items.map(x => {
     if (x.kind === 'payment') return { ...x, status: 'payment' };
+    const l = links[stmtSig(x)];
+    const linked = l && (rows[l.table] || []).find(r => r.id === l.id);
+    if (linked) {
+      const same = near(recAmount(linked, l.table), x.amount) && (l.table !== 'installments' || instSame(linked, x));
+      return take(linked, l.table, same ? 'ok' : 'diff', x);
+    }
+    return x;
+  }).map(x => {
+    if (x.status) return x;
     if (x.inst) {
       const pool = insts.filter(i => !used.has(i.id));
-      const ok = pool.find(i => near(i.monthly_amount, x.amount) && (inst.total(i) === x.inst.n || nameOf(i, x.name))) || pool.find(i => near(i.monthly_amount, x.amount));
+      const ok = pool.find(i => near(i.monthly_amount, x.amount) && instSame(i, x));
       if (ok) return take(ok, 'installments', 'ok', x);
-      const d = pool.find(i => nameOf(i, x.name) && inst.total(i) === x.inst.n) || pool.find(i => nameOf(i, x.name));
+      const d = pool.find(i => near(i.monthly_amount, x.amount)) || pool.find(i => nameOf(i, x.name) && instSame(i, x)) || pool.find(i => nameOf(i, x.name));
       return d ? take(d, 'installments', 'diff', x) : { ...x, status: 'missing' };
     }
     const pool = exps.filter(e => !used.has(e.id) && dayDiff(e.date, x.date) <= 4);
@@ -3023,7 +3042,47 @@ function compareStatement(st, rows, uid) {
   const extra = exps.filter(e => !used.has(e.id) && e.date > from && e.date <= cut);
   // Kalan taksit: bu ayınkinden sonraki aylar
   const instLeft = sumBy(insts, i => Number(i.monthly_amount) * diffM(payM, inst.last(i)));
-  return { lines, extra, payM, from, cut, instLeft };
+  return { lines, extra, payM, from, cut, instLeft, used, nameOf };
+}
+
+/** Ekstre satırını uygulamadaki kayda yansıtır: tutar ve (taksitse) taksit ayları. Geri alma için eski değerleri döndürür. */
+function stmtFix(x, rec, payM) {
+  const { it, table } = rec;
+  const field = table === 'installments' ? 'monthly_amount' : 'amount';
+  const patch = { [field]: x.amount };
+  if (table === 'installments' && x.inst) {
+    const first = addM(payM, -(x.inst.k - 1));
+    Object.assign(patch, { first_month: `${first}-01`, last_month: `${addM(first, x.inst.n - 1)}-01` });
+  }
+  const prev = Object.fromEntries(Object.keys(patch).map(k => [k, it[k]]));
+  return { patch, prev };
+}
+
+/** "Uygulamada yok" satırını elle bir kayıtla eşleştirme: kartla ödenen kayıtlarım, en olası olan üstte */
+function StatementMatchSheet({ ctx, x, c, onPick, onClose }) {
+  const { rows, uid } = ctx;
+  const [q, setQ] = useState('');
+  const KIND = { expenses: 'Harcama', fixed_payments: 'Her ay', installments: 'Taksit' };
+  const all = [
+    ...rows.expenses.filter(e => e.payer_id === uid && onCardItem(e, 'expenses') && Number(e.amount) > 0).map(it => ({ it, table: 'expenses', sub: fmtDate(it.date) })),
+    ...rows.installments.filter(i => i.payer_id === uid && onCardItem(i, 'installments')).map(it => ({ it, table: 'installments', sub: `${inst.total(it)} taksit · ${fmtDate(it.first_month)}` })),
+    ...rows.fixed_payments.filter(f => f.payer_id === uid && onCardItem(f, 'fixed_payments')).map(it => ({ it, table: 'fixed_payments', sub: 'her ay' })),
+  ].filter(r => !c.used.has(r.it.id) && (!q || lower(r.it.name).includes(lower(q))));
+  const score = r => (c.nameOf(r.it, x.name) ? 0 : 1) * 1e9 + (r.table === 'expenses' ? dayDiff(r.it.date, x.date) * 1e5 : 0)
+    + Math.abs(recAmount(r.it, r.table) - x.amount) + (x.inst && r.table !== 'installments' ? 1e8 : 0);
+  const list = all.sort((a, b) => score(a) - score(b)).slice(0, 40);
+  return html`
+    <${Sheet} title="Uygulamadaki hangi kayıt?" onClose=${onClose}>
+      <div class="card rows"><div class="row"><span>${x.name}<small class="muted"> · ${fmtDate(x.date)}${x.inst ? ` · ${x.inst.k}/${x.inst.n}. taksit` : ''}</small></span><b>${tl(x.amount)}</b></div></div>
+      <div class="card search"><span>🔎</span><input placeholder="Kayıt ara" value=${q} onInput=${e => setQ(e.target.value)} /></div>
+      <div class="card">
+        ${list.map(r => html`<button class="item" key=${r.table + r.it.id} onClick=${() => onPick(r)}>
+          <span class="grow"><span class="title">${r.it.name}</span><span class="sub">${KIND[r.table]} · ${r.sub}</span></span>
+          <span class="amt">${tl(recAmount(r.it, r.table))}</span></button>`)}
+        ${!list.length && html`<${Empty}>Eşleşecek kart kaydı yok<//>`}
+      </div>
+      <p class="hint">Seçtiğin kaydın tutarı ${tl(x.amount)} olur${x.inst ? `; taksitse ${x.inst.n} taksit olarak düzelir` : ''}. Yanlış olursa "Son işlemi geri al" ile dönebilirsin.</p>
+    <//>`;
 }
 
 function StatementView({ ctx }) {
@@ -3033,7 +3092,12 @@ function StatementView({ ctx }) {
   const [busy, setBusy] = useState(false);
   const [off, setOff] = useState(() => new Set());
   const [infoOn, setInfoOn] = useState(() => new Set(['debt', 'limit']));
+  const [links, setLinksState] = useState(() => lsGet(LS_LINKS, {}));
+  const [undo, setUndoState] = useState(() => lsGet(LS_UNDO, null));
+  const [matching, setMatching] = useState(null);
   const ref = useRef(null);
+  const setLinks = v => { setLinksState(v); lsSet(LS_LINKS, v); };
+  const setUndo = v => { setUndoState(v); lsSet(LS_UNDO, v); };
 
   async function pick(file) {
     if (!file) return;
@@ -3049,6 +3113,26 @@ function StatementView({ ctx }) {
     setBusy(false);
   }
 
+  /** Son işlemi geri al: eklenenler silinir, değişenler eski haline döner */
+  async function runUndo() {
+    if (busy || !undo || !confirm(`Son işlem geri alınsın mı?\n\n${undo.label}`)) return;
+    setBusy(true);
+    let nextLinks = links;
+    for (const op of [...undo.ops].reverse()) {
+      if (op.t === 'add') await actions.del(op.table, op.id);
+      if (op.t === 'patch' && (rows[op.table] || []).some(r => r.id === op.id)) await actions.patch(op.table, op.id, op.prev);
+      if (op.t === 'fin') await saveFin({ ...fin, ...op.prev });
+      if (op.t === 'link') { nextLinks = { ...nextLinks }; if (op.prev) nextLinks[op.sig] = op.prev; else delete nextLinks[op.sig]; }
+    }
+    setLinks(nextLinks);
+    setUndo(null);
+    setBusy(false);
+    celebrate('Geri alındı');
+  }
+  const undoBar = undo && html`
+    <button class="item link-row" disabled=${busy} onClick=${runUndo}>↩️ Son işlemi geri al
+      <span class="sub">${undo.label} · ${whenShort(undo.at)}</span></button>`;
+
   const upload = html`
     <input ref=${ref} type="file" accept="application/pdf,.pdf" style="display:none"
       onChange=${e => { const f = e.target.files?.[0]; e.target.value = ''; pick(f); }} />`;
@@ -3060,70 +3144,109 @@ function StatementView({ ctx }) {
       ${err && html`<p class="error">${err}</p>`}
       ${upload}
     </div>
+    ${undoBar && html`<div class="card">${undoBar}</div>`}
     <p class="hint">PDF telefonunda okunur, hiçbir yere gönderilmez ve saklanmaz.</p>`;
 
-  const c = compareStatement(st, rows, uid);
+  const c = compareStatement(st, rows, uid, links);
   const keyOf = x => `${x.line}`;
-  const fixable = c.lines.filter(x => x.status === 'missing' || x.status === 'diff');
-  const chosen = fixable.filter(x => !off.has(keyOf(x)));
-  const toggle = x => { const n = new Set(off); n.has(keyOf(x)) ? n.delete(keyOf(x)) : n.add(keyOf(x)); setOff(n); };
   const byStatus = s => c.lines.filter(x => x.status === s);
   const ok = byStatus('ok'), diff = byStatus('diff'), missing = byStatus('missing'), pays = byStatus('payment');
-  const when = x => `${fmtDate(x.date)}${x.inst ? ` · ${x.inst.k}/${x.inst.n}. taksit` : ''}${x.fx ? ` · ${x.fx}` : ''}`;
+  const chosen = list => list.filter(x => !off.has(keyOf(x)));
+  const toggle = x => { const n = new Set(off); n.has(keyOf(x)) ? n.delete(keyOf(x)) : n.add(keyOf(x)); setOff(n); };
+  const allOn = list => list.every(x => !off.has(keyOf(x)));
+  const toggleAll = list => { const n = new Set(off); const on = allOn(list); list.forEach(x => (on ? n.add(keyOf(x)) : n.delete(keyOf(x)))); setOff(n); };
+  const instTxt = x => (x.inst ? ` · ${x.inst.k}/${x.inst.n}. taksit` : '');
+  const when = x => `${fmtDate(x.date)}${instTxt(x)}${x.fx ? ` · ${x.fx}` : ''}`;
   const KIND = { expenses: 'harcama', fixed_payments: 'her ay', installments: 'taksit' };
 
-  async function apply() {
-    if (busy || !chosen.length) return;
+  /** Sadece "uygulamada yok" listesinden seçilenleri ekler */
+  async function addMissing() {
+    const list = chosen(missing);
+    if (busy || !list.length) return;
     setBusy(true);
-    for (const x of chosen) {
-      if (x.status === 'diff') {
-        const field = x.rec.table === 'installments' ? 'monthly_amount' : 'amount';
-        await actions.patch(x.rec.table, x.rec.it.id, { [field]: x.amount });
-      } else if (x.inst) {
+    const ops = [];
+    for (const x of list) {
+      const id = crypto.randomUUID ? crypto.randomUUID() : undefined;
+      let okk;
+      if (x.inst) {
         const first = addM(c.payM, -(x.inst.k - 1));
-        await actions.add('installments', {
-          name: x.name, monthly_amount: x.amount, first_month: `${first}-01`, last_month: `${addM(first, x.inst.n - 1)}-01`,
+        okk = await actions.add('installments', {
+          ...(id ? { id } : {}), name: x.name, monthly_amount: x.amount, first_month: `${first}-01`, last_month: `${addM(first, x.inst.n - 1)}-01`,
           payer_id: uid, shared: false, split: 'half', category: guessCat(x.name), on_card: true,
         });
+        if (okk !== false && id) ops.push({ t: 'add', table: 'installments', id });
       } else {
-        await actions.add('expenses', {
-          name: x.kind === 'fee' ? 'Dönem faizi' : x.name, amount: x.amount, date: x.date,
+        okk = await actions.add('expenses', {
+          ...(id ? { id } : {}), name: x.kind === 'fee' ? 'Dönem faizi' : x.name, amount: x.amount, date: x.date,
           payer_id: uid, shared: false, split: 'half', category: guessCat(x.name), on_card: true, paid_months: [],
         });
+        if (okk !== false && id) ops.push({ t: 'add', table: 'expenses', id });
       }
     }
-    celebrate(`${chosen.length} kayıt ekstreye göre düzeltildi!`);
-    setOff(new Set());
+    setUndo({ label: `${list.length} kayıt ekstreden eklendi`, at: new Date().toISOString(), ops });
+    celebrate(`${list.length} kayıt eklendi!`);
     setBusy(false);
   }
 
-  const row = (x, check) => html`
+  /** Sadece "tutarı farklı" listesinden seçilenlerin tutarını (taksitse taksit sayısını da) düzeltir */
+  async function fixDiffs() {
+    const list = chosen(diff);
+    if (busy || !list.length) return;
+    setBusy(true);
+    const ops = [];
+    for (const x of list) {
+      const { patch, prev } = stmtFix(x, x.rec, c.payM);
+      if (await actions.patch(x.rec.table, x.rec.it.id, patch) !== false) ops.push({ t: 'patch', table: x.rec.table, id: x.rec.it.id, prev });
+    }
+    setUndo({ label: `${list.length} kaydın tutarı düzeltildi`, at: new Date().toISOString(), ops });
+    celebrate(`${list.length} tutar düzeltildi!`);
+    setBusy(false);
+  }
+
+  /** "Uygulamada yok" satırını seçilen kayda bağlar ve kaydı ekstreye göre düzeltir */
+  async function manualMatch(x, r) {
+    setMatching(null);
+    setBusy(true);
+    const sig = stmtSig(x);
+    const { patch, prev } = stmtFix(x, r, c.payM);
+    const ops = [{ t: 'link', sig, prev: links[sig] || null }];
+    if (await actions.patch(r.table, r.it.id, patch) !== false) ops.push({ t: 'patch', table: r.table, id: r.it.id, prev });
+    setLinks({ ...links, [sig]: { table: r.table, id: r.it.id } });
+    setUndo({ label: `${x.name} → ${r.it.name} eşleştirildi`, at: new Date().toISOString(), ops });
+    celebrate('Eşleştirildi!');
+    setBusy(false);
+  }
+
+  const row = (x, check, extra) => html`
     <div class="item" key=${keyOf(x)}>
       ${check ? html`<button class=${'check' + (!off.has(keyOf(x)) ? ' on' : '')} onClick=${() => toggle(x)} aria-label="Seç">${!off.has(keyOf(x)) ? '✓' : ''}</button>`
         : html`<span class="check on" aria-hidden="true">✓</span>`}
       <div class="grow" onClick=${check ? () => toggle(x) : undefined}>
         <div class="title">${x.name}</div>
-        <div class="sub">${when(x)}${x.rec ? ` · uygulamada: ${x.rec.it.name} (${KIND[x.rec.table]})` : x.inst ? ' · taksit olarak eklenir' : ''}</div>
+        <div class="sub">${when(x)}${x.rec ? ` · uygulamada: ${x.rec.it.name} (${KIND[x.rec.table]}${x.rec.table === 'installments' ? `, ${inst.total(x.rec.it)} taksit` : ''})` : x.inst ? ' · taksit olarak eklenir' : ''}</div>
       </div>
       <div class="amt">
         ${x.status === 'diff' ? html`<div class="sub done">${tl(x.rec.amount)}</div><div class="warn">${tl(x.amount)}</div>` : tl(x.amount)}
+        ${extra}
       </div>
     </div>`;
+  const selAll = list => html`<button class="link small" onClick=${() => toggleAll(list)}>${allOn(list) ? 'Hiçbirini seçme' : 'Hepsini seç'}</button>`;
 
   // Hesap bilgileri: ekstre ile uygulamadaki farklıysa eşitlenebilir
   const info = st.info;
   const appSpend = sumBy(c.lines.filter(x => x.rec), x => x.rec.amount);
   const infoRows = [
-    info.debt != null && { k: 'debt', label: 'Dönem borcu', sub: 'Uygulamada "borcun tamamı"', st: info.debt, app: Number(fin.card_debt) || 0 },
-    info.limit != null && { k: 'limit', label: 'Kart limiti', st: info.limit, app: Number(fin.card_limit) || 0 },
+    info.debt != null && { k: 'debt', f: 'card_debt', label: 'Dönem borcu', st: info.debt, app: Number(fin.card_debt) || 0 },
+    info.limit != null && { k: 'limit', f: 'card_limit', label: 'Kart limiti', st: info.limit, app: Number(fin.card_limit) || 0 },
   ].filter(Boolean);
   const infoDiff = infoRows.filter(r => !near(r.st, r.app));
   async function applyInfo() {
     const pickd = infoDiff.filter(r => infoOn.has(r.k));
     if (!pickd.length) return;
-    const patch = {};
-    for (const r of pickd) patch[r.k === 'debt' ? 'card_debt' : 'card_limit'] = r.st;
+    const patch = Object.fromEntries(pickd.map(r => [r.f, r.st]));
+    const prev = Object.fromEntries(pickd.map(r => [r.f, fin[r.f] ?? null]));
     await saveFin({ ...fin, ...patch });
+    setUndo({ label: `${pickd.map(r => lower(r.label)).join(' ve ')} ekstreye eşitlendi`, at: new Date().toISOString(), ops: [{ t: 'fin', prev }] });
     celebrate('Kart bilgileri eşitlendi!');
   }
 
@@ -3139,12 +3262,20 @@ function StatementView({ ctx }) {
         <div class="row"><span>Uygulamada yok</span><b class=${missing.length ? 'warn' : ''}>${missing.length}</b></div>
       </div>
     </div>
+    ${undoBar && html`<div class="card">${undoBar}</div>`}
 
-    ${missing.length > 0 && html`<${Group} title=${`Uygulamada yok (${missing.length})`} total=${sumBy(missing, x => x.amount)}>${missing.map(x => row(x, true))}<//>`}
-    ${diff.length > 0 && html`<${Group} title=${`Tutarı farklı (${diff.length}) · sadece tutar değişir`}>${diff.map(x => row(x, true))}<//>`}
-    ${fixable.length > 0 && html`<button class="primary" disabled=${busy || !chosen.length} onClick=${apply}>
-      ${busy ? 'Aktarılıyor…' : `Seçilenleri ekstreden aktar (${chosen.length})`}</button>`}
-    ${!fixable.length && html`<p class="hint center">Ekstredeki bütün işlemler uygulamada doğru görünüyor 🎉</p>`}
+    ${missing.length > 0 && html`
+      <${Group} title=${`Uygulamada yok (${missing.length})`} action=${selAll(missing)}>
+        ${missing.map(x => row(x, true, html`<button class="link small" onClick=${e => { e.stopPropagation(); setMatching(x); }}>Eşleştir</button>`))}
+      <//>
+      <p class="hint">Uygulamada farklı bir isimle varsa "Eşleştir"e bas; o kaydın tutarı (ve taksit sayısı) ekstreye göre düzelir.</p>
+      <button class="primary" disabled=${busy || !chosen(missing).length} onClick=${addMissing}>
+        ${busy ? 'İşleniyor…' : `Seçilenleri uygulamaya ekle (${chosen(missing).length})`}</button>`}
+    ${diff.length > 0 && html`
+      <${Group} title=${`Tutarı farklı (${diff.length})`} action=${selAll(diff)}>${diff.map(x => row(x, true))}<//>
+      <button class="primary ghost" disabled=${busy || !chosen(diff).length} onClick=${fixDiffs}>
+        ${busy ? 'İşleniyor…' : `Seçilenlerin tutarını düzelt (${chosen(diff).length})`}</button>`}
+    ${!missing.length && !diff.length && html`<p class="hint center">Ekstredeki bütün işlemler uygulamada doğru görünüyor 🎉</p>`}
 
     ${infoRows.length > 0 && html`<${Group} title="Hesap bilgileri">
       ${infoRows.map(r => {
@@ -3169,7 +3300,8 @@ function StatementView({ ctx }) {
       ${c.extra.map(e => html`<div class="row pad" key=${e.id}><span>${e.name}<small class="muted"> · ${fmtDate(e.date)}</small></span><b>${tl(e.amount)}</b></div>`)}
       <div class="row pad"><small class="muted">Sonraki ekstreye kalmış ya da yanlış girilmiş olabilir; gerekirse Kayıtlar'dan düzelt.</small></div><//>`}
     <button class="link small center-block" onClick=${() => ref.current.click()}>Başka bir hesap özeti seç</button>
-    ${upload}`;
+    ${upload}
+    ${matching && html`<${StatementMatchSheet} ctx=${ctx} x=${matching} c=${c} onPick=${r => manualMatch(matching, r)} onClose=${() => setMatching(null)} />`}`;
 }
 
 const BANK_STATUS = { pending: 'Bekliyor', added: 'Harcama olarak eklendi', matched: 'Eşleştirildi', ignored: 'Yok sayıldı' };
