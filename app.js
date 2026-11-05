@@ -554,6 +554,10 @@ function makeToggle(ctx, m) {
 function MonthScreen({ ctx }) {
   const { rows, uid, actions, fin } = ctx;
   const [m, setM] = useState(thisMonth());
+  // Bütçe ayı değişince (maaş yattı, gün döndü) ekran da yeni aya geçer; elle başka aya bakılıyorsa o da bu aya döner
+  const cur = thisMonth();
+  const seen = useRef(cur);
+  useEffect(() => { if (seen.current !== cur) { seen.current = cur; setM(cur); } }, [cur]);
   const [form, setForm] = useState(null);
 
 
@@ -1782,6 +1786,10 @@ function BenScreen({ ctx }) {
 /** Ben > Kayıtlarım: kayıtlar şahsi/ortak ve türüne göre; ödenmedi/ödendi tiki burada atılır */
 function RecordsView({ ctx }) {
   const [m, setM] = useState(thisMonth());
+  // Bütçe ayı değişince (maaş yattı, gün döndü) ekran da yeni aya geçer; elle başka aya bakılıyorsa o da bu aya döner
+  const cur = thisMonth();
+  const seen = useRef(cur);
+  useEffect(() => { if (seen.current !== cur) { seen.current = cur; setM(cur); } }, [cur]);
   const [side, setSide] = useState('nakit');
   const [detail, setDetail] = useState(null);
   const [form, setForm] = useState(null);
