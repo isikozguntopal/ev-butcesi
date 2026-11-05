@@ -168,6 +168,23 @@ const sumBy = (arr, f) => arr.reduce((s, x) => s + f(x), 0);
 
 /** O ay için kendi kredi kartı ödeme kaydım */
 const cardFor = (rows, uid, m) => rows.card_payments.find(c => c.owner_id === uid && c.month === m);
+/** O ay ödenen ekstre kapandı mı: o ayın kart ödemesi en az asgari kadar. Asgari ekstreden (yüklendiyse) bilinir;
+ *  bilinmiyorsa dönem borcunun %20'si. Borç da bilinmiyorsa herhangi bir kart ödemesi yeter. */
+const STMT_MIN = 'tf-stmt-min';
+function cardStmtPaid(rows, fin, uid, payM) {
+  const paid = Number(cardFor(rows, uid, payM)?.amount) || 0;
+  if (!(paid > 0)) return false;
+  let min = null;
+  try { min = Number(JSON.parse(localStorage.getItem(STMT_MIN) || '{}')[payM]) || null; } catch { /* yok say */ }
+  const debt = Number(fin?.card_debt) || 0;
+  return paid + 0.005 >= (min ?? (debt ? debt * 0.2 : 0));
+}
+/** Kart kaydının ödendi durumu (Kayıtlar > Kredi kartı): elle tik yok, ekstrenin kart ödemesiyle belli olur.
+ *  Görünen ay L'deki harcama ve aylık ödeme L+1'de ödenen ekstrededir; taksit o ayın kart ödemesindedir. */
+function cardRecPaid(ctx, x, m) {
+  const payM = x.table === 'expenses' ? addM(cardMonthOf(x.it), 1) : x.table === 'fixed_payments' ? addM(m, 1) : m;
+  return cardStmtPaid(ctx.rows, ctx.fin, ctx.uid, payM);
+}
 /** O aya devredilen nakit bakiye (manuel karar; 0 = devretme) */
 const carryFor = (rows, uid, m) => (rows.carryovers || []).find(c => c.owner_id === uid && c.month === m);
 /** Bir ayın nakit bakiyesi (devir dahil). Ekim 2026 öncesi veriler güvenilir değil, hesaba katılmaz. */
@@ -2352,9 +2369,12 @@ function CategoryGroups({ ctx, m, side, onToggle, onOpen }) {
   const { rows, uid, names } = ctx;
   const [toggled, setToggled] = useState({});
   const onCardRec = x => x.it.payer_id === uid && onCardItem(x.it, x.table);
+  // Kart tarafında tik atılmaz: kayıt, ekstresinin kart ödemesi (en az asgari) girilince ödendi görünür
+  const card = side === 'kart';
+  const paidOf = x => (card ? cardRecPaid(ctx, x, m) : isPaid(x.it, m));
   const groups = recordGroups(rows, uid, m).map(g => {
-    const items = g.items.filter(x => (side === 'kart') === onCardRec(x));
-    return { ...g, items, total: sumBy(items, x => share(x.it, x.amt, uid)), hasUnpaid: items.some(x => !isPaid(x.it, m)) };
+    const items = g.items.filter(x => card === onCardRec(x));
+    return { ...g, items, total: sumBy(items, x => share(x.it, x.amt, uid)), hasUnpaid: items.some(x => !paidOf(x)) };
   });
   const isOpen = g => (g.id in toggled ? toggled[g.id] : g.hasUnpaid);
   return html`<div>
@@ -2366,11 +2386,12 @@ function CategoryGroups({ ctx, m, side, onToggle, onOpen }) {
         </button>
         ${isOpen(g) && html`<div class="card">
           ${g.items.map(x => html`<${PayRow} key=${x.it.id} title=${x.it.name} sub=${recSub(x, m, uid, names)}
-            amount=${share(x.it, x.amt, uid)} full=${x.amt} paid=${isPaid(x.it, m)}
-            onToggle=${() => onToggle(x.table, x.it)} onOpen=${() => onOpen(x)} />`)}
+            amount=${share(x.it, x.amt, uid)} full=${x.amt} paid=${paidOf(x)}
+            onToggle=${card ? null : () => onToggle(x.table, x.it)} onOpen=${() => onOpen(x)} />`)}
           ${!g.items.length && html`<${Empty}>Bu ay bu grupta kayıt yok<//>`}
         </div>`}
       </div>`)}
+    ${card && html`<p class="hint">Kart kayıtları elle işaretlenmez. ${monthName(m)} kart harcamaları, ${monthName(addM(m, 1))} ayında yaptığın kart ödemesini (en az asgari kadar) girince ödendi görünür.</p>`}
   </div>`;
 }
 
@@ -3194,6 +3215,9 @@ function StatementView({ ctx }) {
       const { readPdfLines, parseStatement } = await import('./statement.js');
       const r = parseStatement(await readPdfLines(file));
       if (!r.items.length) throw new Error('empty');
+      // Asgari ödeme saklanır: kart kayıtları o ekstreye en az bu kadar ödeme girilince ödendi görünür
+      const due = r.info.due || r.info.cut;
+      if (due && r.info.min != null) { try { localStorage.setItem(STMT_MIN, JSON.stringify({ ...JSON.parse(localStorage.getItem(STMT_MIN) || '{}'), [mk(due)]: r.info.min })); } catch { /* yok say */ } }
       setSt(r);
     } catch (e) {
       setErr(e?.message === 'empty' ? 'Bu PDF\'te işlem bulunamadı. Şimdilik Yapı Kredi hesap özeti okunabiliyor.' : 'PDF okunamadı. İnternet bağlantını kontrol edip tekrar dene.');
