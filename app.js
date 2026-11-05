@@ -60,6 +60,11 @@ function salaryAt(m) {
   const hit = (SAL.evs || []).filter(e => isSalaryEv(e) && dayOf(e.occurred_at) === payday(m)).map(e => Date.parse(e.occurred_at));
   return hit.length ? Math.min(...hit) : null;
 }
+/** Elle "Maaş geldi" denen an (Ben ekranı): kişinin ayarlarında { "2026-11": ISO } olarak tutulur, tüm cihazlarında geçerli */
+function manualSalaryAt(m) {
+  const v = (SAL.members || []).find(x => x.user_id === SAL.uid)?.notify_prefs?.salary_at?.[m];
+  return v ? Date.parse(v) : null;
+}
 /** Banka mesajları bağlı mı (bağlı değilse maaş görülemez, öğlen 12 kuralı kullanılır) */
 const bankLinked = () => (SAL.evs || []).some(e => e.owner_id === SAL.uid);
 /** Bir anın bütçe günü: maaş günü maaş bankaya yatana kadar önceki güne yazılır.
@@ -68,7 +73,8 @@ const budgetDay = (t = new Date()) => {
   const d = new Date(t);
   const s = dayOf(d), m = s.slice(0, 7);
   if (m < PERIOD_START || s !== payday(m)) return s;
-  const at = bankLinked() ? salaryAt(m) : null;
+  // Elle "Maaş geldi" denildiyse o an esas; yoksa bankadan görülen maaş; banka bağlı değilse öğlen 12
+  const at = manualSalaryAt(m) ?? (bankLinked() ? salaryAt(m) : null);
   const paid = at != null ? d.getTime() >= at : !bankLinked() && d.getHours() >= 12;
   if (paid) return s;
   const y = new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1);
@@ -1809,6 +1815,7 @@ function BenScreen({ ctx }) {
   return html`
     <header class="top"><h1>${myName ? `Merhaba ${myName}` : 'Ben'}</h1></header>
     <${Buddy} face=${dailyFace(4)} say=${`Kumbaramızda ${tl(totalSaved)} var 🐷`} />
+    <${SalaryCard} ctx=${ctx} />
     <div class="card">
       ${item('savings', '💰', 'Birikimim', `${tl(totalSaved)} · gelir ${tl(f.income)}`)}
       ${item('help', '📖', 'Nasıl kullanılır', 'Adım adım, ekran görüntüleriyle')}
@@ -2517,6 +2524,35 @@ function SubscriptionsView({ ctx }) {
       ${!subs.length && html`<${Empty}>Henüz bulunan abonelik yok. Kart SMS'leri geldikçe her ay tekrar eden çekimler burada çıkar<//>`}
     <//>
     <p class="hint">Liste kart harcaması SMS'lerinden çıkar. İki farklı ayda aynı işyerinden çekim olunca abonelik sayılır; Netflix, Youtube gibi bilinen servisler ilk çekimde görünür. "Kaydet" ile aylık ödemelerine eklenir, sonraki ay otomatik eşleşir.</p>`;
+}
+
+/** Maaş günü: maaş bankadan görülmediyse "Maaş geldi" ile yeni aya elle geçilir; aynı gün geri alınabilir */
+function SalaryCard({ ctx }) {
+  const d = today(), m = d.slice(0, 7);
+  if (m < PERIOD_START || d !== payday(m)) return null;
+  const prefs = ctx.members.find(x => x.user_id === ctx.uid)?.notify_prefs || {};
+  const manual = prefs.salary_at?.[m];
+  const arrived = thisMonth() === m;
+  async function mark() {
+    if (!confirm(`Maaşın yattı mı?\n\n${monthName(m)} bütçesine geçilir; bundan sonra girdiğin kayıtlar ${monthName(m)} ayına yazılır.`)) return;
+    await ctx.savePrefs({ ...prefs, salary_at: { ...(prefs.salary_at || {}), [m]: new Date().toISOString() } });
+    celebrate('Maaş geldi! 🎉');
+  }
+  async function undo() {
+    if (!confirm('"Maaş geldi" geri alınsın mı? Maaş bankadan görülene kadar önceki ay gösterilir.')) return;
+    const { [m]: _, ...rest } = prefs.salary_at || {};
+    await ctx.savePrefs({ ...prefs, salary_at: rest });
+  }
+  if (arrived && !manual) return null;
+  return html`<div class="card">
+    ${arrived
+      ? html`<div class="item"><span class="menu-icon">💼</span><span class="grow"><span class="title">Maaş geldi ✓</span><span class="sub">${whenShort(manual)} · elle işaretlendi, ${monthName(m)} bütçesindesin</span></span>
+          <button class="link" onClick=${undo}>Geri al</button></div>`
+      : html`<button class="item menu-item" onClick=${mark}>
+          <span class="menu-icon">💼</span>
+          <span class="grow"><span class="title">Maaş geldi</span><span class="sub">Bugün maaş günü; maaş bankadan görülmedi. Yattıysa dokun, ${monthName(m)} ayına geçilsin</span></span>
+          <span class="chev-r">›</span></button>`}
+  </div>`;
 }
 
 /** Taksit takvimi: önümüzdeki aylarda taksit yükü ve biten taksitler */
