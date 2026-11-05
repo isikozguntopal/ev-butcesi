@@ -726,7 +726,8 @@ function MonthScreen({ ctx }) {
           ${endOpen && html`
             <div class="row sub-row"><span>Bankadaki bakiye<small class="muted"> · şu an</small></span><b>${tl(bankNow)}</b></div>
             ${b.unpaidList.length > 0 && html`<div class="row head-row"><small class="muted">Henüz ödenmeyenler düşülür</small></div>`}
-            ${b.unpaidList.map((x, k) => html`<div class="row sub-row" key=${'u' + k}><span>${x.name}</span><b class="neg">${signed(-x.amt).text}</b></div>`)}
+            ${b.unpaidList.map((x, k) => html`<div class="row sub-row" key=${'u' + k}><span>${x.name}</span><b class="neg">${signed(-x.amt).text}</b></div>
+              ${x.card && m === thisMonth() && html`<div class="row sub-row"><button class="link small" onClick=${() => markMinPaid(ctx, m, b.cardMin)}>✓ Bankada ödenmiş görünüyorsa: Asgariyi ödedim</button></div>`}`)}
             ${b.pendingIn >= 0.01 && html`<div class="row sub-row"><span>Hesaplaşmadan gelecek</span><b class="pos">${signed(b.pendingIn).text}</b></div>`}
             ${prePay && income > 0 && html`<div class="row sub-row"><span>Maaş<small class="muted"> · henüz yatmadı</small></span><b class="pos">${signed(income).text}</b></div>`}
             ${!b.unpaidList.length && b.pendingIn < 0.01 && !prePay && html`<div class="row sub-row"><small class="muted">Ödenmemiş kalem yok; bankadaki para ay sonuna kadar kalır</small></div>`}
@@ -903,6 +904,12 @@ async function setCardPayment(ctx, month, next) {
     await saveFin({ ...fin, card_used: Math.max(0, Math.round((usedNow + prev - next) * 100) / 100), card_used_at: today() });
   }
   return ok;
+}
+
+/** "Asgariyi ödedim": banka ödemeyi zaten gördüğü için sadece ayın kart ödemesi asgariye getirilir, limit değişmez */
+async function markMinPaid(ctx, month, min) {
+  if (!confirm(`Bankada asgari ödenmiş görünüyorsa bu ayın kart ödemesi ${tl(min)} olarak kaydedilir.\n\nKullanılabilir limit değişmez; farklıysa "Kart bilgilerini güncelle"den bankadaki limiti yaz.`)) return;
+  if (await saveCardPayment(ctx, month, min) !== false) celebrate('Asgari ödendi ✓');
 }
 
 async function payCard(ctx, amount, month = thisMonth(), rebase = true) {
@@ -2264,7 +2271,7 @@ function nakitBreakdown(rows, uid, m, income, members) {
   const cardRest = Math.round((cardAmt - cardPaid) * 100) / 100;
   res.unpaidList = [
     ...(settleOwed >= 0.01 ? [{ name: 'Hesaplaşma · gönderilecek', amt: settleOwed }] : []),
-    ...(cardRest >= 0.01 ? [{ name: 'Kart ödemesi · asgariye kalan', amt: cardRest }] : []),
+    ...(cardRest >= 0.01 ? [{ name: 'Kart ödemesi · asgariye kalan', amt: cardRest, card: true }] : []),
     ...unpaidItems.filter(({ amt }) => amt > 0).map(({ it, amt }) => ({ name: it.name, amt })),
   ];
   res.unpaid = Math.round(sumBy(res.unpaidList, x => x.amt) * 100) / 100;
@@ -2386,11 +2393,7 @@ function OzetGroups({ ctx, m, view, focus }) {
       ${b.cardMin != null && html`<div class="row pad"><small class="muted">${b.cardPaid + 0.005 >= b.cardMin
         ? 'Asgari karşılandı ✓ · hesapta ödediğin tutar düşülür'
         : `Hesapta asgari tutar düşülür · asgariye ${tl(Math.round((b.cardMin - b.cardPaid) * 100) / 100)} kaldı`}</small></div>`}
-      ${b.cardMin != null && b.cardPaid + 0.005 < b.cardMin && m === thisMonth() && html`<div class="row pad"><button class="primary ghost small" onClick=${async () => {
-        // Banka ödemeyi zaten gördü: sadece tutar güncellenir, limit bankadan gelen bilgiyle kalır
-        if (!confirm(`Bankada asgari ödenmiş görünüyorsa bu ayın kart ödemesi ${tl(b.cardMin)} olarak kaydedilir.\n\nKullanılabilir limit değişmez; farklıysa "Kart bilgilerini güncelle"den bankadaki limiti yaz.`)) return;
-        if (await saveCardPayment(ctx, m, b.cardMin) !== false) celebrate('Asgari ödendi ✓');
-      }}>✓ Asgariyi ödedim</button></div>`}`, 'out', true)}
+      ${b.cardMin != null && b.cardPaid + 0.005 < b.cardMin && m === thisMonth() && html`<div class="row pad"><button class="primary ghost small" onClick=${() => markMinPaid(ctx, m, b.cardMin)}>✓ Asgariyi ödedim</button></div>`}`, 'out', true)}
     ${g('fixed', 'Aylık ödemeler', b.fixed, renderItems(itemsOf('fixed', b.items.fixed, 'fixed_payments', 'fixed')), 'out', !b.items.fixed.length, unpaidNote(b.items.fixed))}
     ${g('installment', 'Taksitler', b.installment, renderItems(itemsOf('installment', b.items.installment, 'installments', 'installment')), 'out', !b.items.installment.length, unpaidNote(b.items.installment))}
     ${g('expense', 'Harcamalar', b.expense, renderItems(itemsOf('expense', b.items.expense, 'expenses', 'expense')), 'out', !b.items.expense.length, unpaidNote(b.items.expense))}
