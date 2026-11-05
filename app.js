@@ -1734,6 +1734,7 @@ function BenScreen({ ctx }) {
   if (page === 'instcal') return html`${back('Taksit takvimi')}<${InstallmentCalendar} ctx=${ctx} />`;
   if (page === 'help') return html`<${HelpTour} onClose=${() => setPage(null)} />`;
   if (page === 'settings') return html`${back('Ayarlar')}<${SettingsView} ctx=${ctx} />`;
+  if (page === 'statement') return html`${back('Hesap özeti')}<${StatementView} ctx=${ctx} />`;
 
   const item = (id, icon, title, sub) => html`
     <button class="item menu-item" onClick=${() => setPage(id)}>
@@ -1750,6 +1751,7 @@ function BenScreen({ ctx }) {
       ${item('help', '📖', 'Nasıl kullanılır', 'Adım adım, ekran görüntüleriyle')}
       ${item('goals', '🎯', 'Hedeflerimiz', `${(rows.goals || []).length} hedef · ${tl(sumBy(rows.goals || [], g => Number(g.saved)))} biriktirildi`)}
       ${item('subs', '🔁', 'Abonelikler', 'Karttan her ay çekilenler, zam gelenler')}
+      ${item('statement', '🧾', 'Hesap özeti ile eşitle', 'Kart ekstresini (PDF) yükle, kayıtları karşılaştır')}
       ${item('instcal', '📆', 'Taksit takvimi', 'Hangi ay hangi taksit bitiyor, ne kadar rahatlarsınız')}
       ${item('settle', '💸', 'Hesaplaşma', 'Ortak kalemlerin mahsuplaşması')}
       ${item('report', '📊', 'Raporlar', 'Para nereye gidiyor, kategoriler, en büyük taksitler')}
@@ -2954,6 +2956,220 @@ function BankSinceRows({ ctx }) {
   return html`
     ${list.map(x => html`<div class="row since" key=${x.id}><span>${x.name}<small class="muted"> · ${whenShort(x.at)}</small></span><b class=${x.amt > 0 ? 'pos' : 'neg'}>${signed(x.amt).text}</b></div>`)}
     <div class="row since-now"><span>Tahmini şu an</span><b>${tl(now)}</b></div>`;
+}
+
+// ---------- Hesap özeti (ekstre) ile eşitleme ----------
+
+/** Ekstredeki işyeri adından kategori tahmini */
+function guessCat(name) {
+  const n = lower(name);
+  if (/migros|carrefour|a101|bim|şok|sok market|market|macro|file/.test(n)) return 'Market';
+  if (/turkcell|vodafone|türk telekom|turk telekom|fatura|enerji|igdaş|iski/.test(n)) return 'Ev ve faturalar';
+  if (/otopark|opet|shell|petrol|bp |taksi|uber|marti|havaist|pegasus|thy/.test(n)) return 'Ulaşım';
+  if (/apple|hbo|amazon|netflix|spotify|digiturk|youtube|disney|exxen|blutv|go kart|happy center/.test(n)) return 'Eğlence';
+  if (/itopya|anthropic|openai|teknosa|mediamarkt|vatan/.test(n)) return 'Teknoloji';
+  if (/boyner|adidas|nike|zara|lcw|defacto|koton|mavi|underbros/.test(n)) return 'Giyim';
+  if (/eczane|hastane|klinik/.test(n)) return 'Sağlık';
+  return 'Diğer';
+}
+
+/** İki işyeri adı aynı yer mi: 4+ harfli bir kelime diğerinin içinde geçiyorsa ("OZ SAHINLER MARKET" ~ "Oz Sahinler- Su") */
+const STOP = new Set(['market', 'bill', 'fatura', 'mpass', 'online', 'store', 'magaza', 'mağaza', 'sanayi', 'turizm', 'ticaret']);
+function sameMerchant(a, b) {
+  const words = s => lower(s || '').split(/[^a-zçğıöşü0-9]+/).filter(w => w.length >= 4 && !STOP.has(w));
+  const ka = merchantKey(a), kb = merchantKey(b);
+  if (!ka || !kb) return false;
+  return words(a).some(w => kb.includes(w.replace(/[^a-zçğıöşü]/g, ''))) || words(b).some(w => ka.includes(w.replace(/[^a-zçğıöşü]/g, '')));
+}
+const dayDiff = (a, b) => Math.abs(Date.parse(String(a).slice(0, 10)) - Date.parse(String(b).slice(0, 10))) / 86400000;
+const near = (a, b) => Math.abs(Number(a) - Number(b)) < 0.01;
+
+/** Ekstredeki her işlemi uygulamadaki kart kayıtlarımla karşılaştırır.
+ *  status: ok (aynı) · diff (aynı kayıt, tutar farklı) · missing (uygulamada yok) · payment (karta ödeme, bilgi) */
+function compareStatement(st, rows, uid) {
+  const cut = st.info.cut || st.items.reduce((m, i) => (i.date > m ? i.date : m), '');
+  const from = `${addM(mk(cut), -1)}${cut.slice(7)}`;
+  // Ekstre, ödeme ayının kart kayıtları: 1 Kasım kesimli ekstre Kasım'da ödenir
+  const payM = st.info.due ? mk(st.info.due) : mk(cut);
+  const learned = (rows.bank_events || []).filter(e => e.matched_id && e.merchant);
+  const nameOf = (it, s) => sameMerchant(s, it.name) || learned.some(e => e.matched_id === it.id && sameMerchant(s, e.merchant));
+  const exps = rows.expenses.filter(e => e.payer_id === uid && onCardItem(e, 'expenses') && Number(e.amount) > 0);
+  const fixed = rows.fixed_payments.filter(f => f.payer_id === uid && onCardItem(f, 'fixed_payments'));
+  const insts = rows.installments.filter(i => i.payer_id === uid && onCardItem(i, 'installments') && inst.active(i, payM));
+  const used = new Set();
+  const take = (it, table, status, x) => { used.add(it.id); return { ...x, status, rec: { it, table, amount: Number(table === 'installments' ? it.monthly_amount : it.amount) } }; };
+  const lines = st.items.map(x => {
+    if (x.kind === 'payment') return { ...x, status: 'payment' };
+    if (x.inst) {
+      const pool = insts.filter(i => !used.has(i.id));
+      const ok = pool.find(i => near(i.monthly_amount, x.amount) && (inst.total(i) === x.inst.n || nameOf(i, x.name))) || pool.find(i => near(i.monthly_amount, x.amount));
+      if (ok) return take(ok, 'installments', 'ok', x);
+      const d = pool.find(i => nameOf(i, x.name) && inst.total(i) === x.inst.n) || pool.find(i => nameOf(i, x.name));
+      return d ? take(d, 'installments', 'diff', x) : { ...x, status: 'missing' };
+    }
+    const pool = exps.filter(e => !used.has(e.id) && dayDiff(e.date, x.date) <= 4);
+    const byDay = (a, b) => dayDiff(a.date, x.date) - dayDiff(b.date, x.date);
+    const ok = pool.filter(e => near(e.amount, x.amount)).sort((a, b) => (nameOf(b, x.name) - nameOf(a, x.name)) || byDay(a, b))[0];
+    if (ok) return take(ok, 'expenses', 'ok', x);
+    const fx = fixed.filter(f => !used.has(f.id));
+    const fOk = fx.find(f => near(f.amount, x.amount) && nameOf(f, x.name)) || fx.find(f => near(f.amount, x.amount));
+    if (fOk) return take(fOk, 'fixed_payments', 'ok', x);
+    const d = pool.filter(e => nameOf(e, x.name)).sort(byDay)[0];
+    if (d) return take(d, 'expenses', 'diff', x);
+    const fD = fx.find(f => nameOf(f, x.name));
+    return fD ? take(fD, 'fixed_payments', 'diff', x) : { ...x, status: 'missing' };
+  });
+  // Dönem içinde uygulamada kartla girilmiş ama ekstrede olmayanlar
+  const extra = exps.filter(e => !used.has(e.id) && e.date > from && e.date <= cut);
+  // Kalan taksit: bu ayınkinden sonraki aylar
+  const instLeft = sumBy(insts, i => Number(i.monthly_amount) * diffM(payM, inst.last(i)));
+  return { lines, extra, payM, from, cut, instLeft };
+}
+
+function StatementView({ ctx }) {
+  const { rows, uid, actions, fin, saveFin } = ctx;
+  const [st, setSt] = useState(null);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [off, setOff] = useState(() => new Set());
+  const [infoOn, setInfoOn] = useState(() => new Set(['debt', 'limit']));
+  const ref = useRef(null);
+
+  async function pick(file) {
+    if (!file) return;
+    setErr(''); setBusy(true); setSt(null); setOff(new Set());
+    try {
+      const { readPdfLines, parseStatement } = await import('./statement.js');
+      const r = parseStatement(await readPdfLines(file));
+      if (!r.items.length) throw new Error('empty');
+      setSt(r);
+    } catch (e) {
+      setErr(e?.message === 'empty' ? 'Bu PDF\'te işlem bulunamadı. Şimdilik Yapı Kredi hesap özeti okunabiliyor.' : 'PDF okunamadı. İnternet bağlantını kontrol edip tekrar dene.');
+    }
+    setBusy(false);
+  }
+
+  const upload = html`
+    <input ref=${ref} type="file" accept="application/pdf,.pdf" style="display:none"
+      onChange=${e => { const f = e.target.files?.[0]; e.target.value = ''; pick(f); }} />`;
+  if (!st) return html`
+    <div class="card hero center-text">
+      <div class="big">🧾</div>
+      <p>Bankadan indirdiğin kredi kartı hesap özetini (PDF) seç. Uygulamadaki kart kayıtlarınla tek tek karşılaştırırım.</p>
+      <button class="primary" disabled=${busy} onClick=${() => ref.current.click()}>${busy ? 'Okunuyor…' : 'Hesap özeti seç (PDF)'}</button>
+      ${err && html`<p class="error">${err}</p>`}
+      ${upload}
+    </div>
+    <p class="hint">PDF telefonunda okunur, hiçbir yere gönderilmez ve saklanmaz.</p>`;
+
+  const c = compareStatement(st, rows, uid);
+  const keyOf = x => `${x.line}`;
+  const fixable = c.lines.filter(x => x.status === 'missing' || x.status === 'diff');
+  const chosen = fixable.filter(x => !off.has(keyOf(x)));
+  const toggle = x => { const n = new Set(off); n.has(keyOf(x)) ? n.delete(keyOf(x)) : n.add(keyOf(x)); setOff(n); };
+  const byStatus = s => c.lines.filter(x => x.status === s);
+  const ok = byStatus('ok'), diff = byStatus('diff'), missing = byStatus('missing'), pays = byStatus('payment');
+  const when = x => `${fmtDate(x.date)}${x.inst ? ` · ${x.inst.k}/${x.inst.n}. taksit` : ''}${x.fx ? ` · ${x.fx}` : ''}`;
+  const KIND = { expenses: 'harcama', fixed_payments: 'her ay', installments: 'taksit' };
+
+  async function apply() {
+    if (busy || !chosen.length) return;
+    setBusy(true);
+    for (const x of chosen) {
+      if (x.status === 'diff') {
+        const field = x.rec.table === 'installments' ? 'monthly_amount' : 'amount';
+        await actions.patch(x.rec.table, x.rec.it.id, { [field]: x.amount });
+      } else if (x.inst) {
+        const first = addM(c.payM, -(x.inst.k - 1));
+        await actions.add('installments', {
+          name: x.name, monthly_amount: x.amount, first_month: `${first}-01`, last_month: `${addM(first, x.inst.n - 1)}-01`,
+          payer_id: uid, shared: false, split: 'half', category: guessCat(x.name), on_card: true,
+        });
+      } else {
+        await actions.add('expenses', {
+          name: x.kind === 'fee' ? 'Dönem faizi' : x.name, amount: x.amount, date: x.date,
+          payer_id: uid, shared: false, split: 'half', category: guessCat(x.name), on_card: true, paid_months: [],
+        });
+      }
+    }
+    celebrate(`${chosen.length} kayıt ekstreye göre düzeltildi!`);
+    setOff(new Set());
+    setBusy(false);
+  }
+
+  const row = (x, check) => html`
+    <div class="item" key=${keyOf(x)}>
+      ${check ? html`<button class=${'check' + (!off.has(keyOf(x)) ? ' on' : '')} onClick=${() => toggle(x)} aria-label="Seç">${!off.has(keyOf(x)) ? '✓' : ''}</button>`
+        : html`<span class="check on" aria-hidden="true">✓</span>`}
+      <div class="grow" onClick=${check ? () => toggle(x) : undefined}>
+        <div class="title">${x.name}</div>
+        <div class="sub">${when(x)}${x.rec ? ` · uygulamada: ${x.rec.it.name} (${KIND[x.rec.table]})` : x.inst ? ' · taksit olarak eklenir' : ''}</div>
+      </div>
+      <div class="amt">
+        ${x.status === 'diff' ? html`<div class="sub done">${tl(x.rec.amount)}</div><div class="warn">${tl(x.amount)}</div>` : tl(x.amount)}
+      </div>
+    </div>`;
+
+  // Hesap bilgileri: ekstre ile uygulamadaki farklıysa eşitlenebilir
+  const info = st.info;
+  const appSpend = sumBy(c.lines.filter(x => x.rec), x => x.rec.amount);
+  const infoRows = [
+    info.debt != null && { k: 'debt', label: 'Dönem borcu', sub: 'Uygulamada "borcun tamamı"', st: info.debt, app: Number(fin.card_debt) || 0 },
+    info.limit != null && { k: 'limit', label: 'Kart limiti', st: info.limit, app: Number(fin.card_limit) || 0 },
+  ].filter(Boolean);
+  const infoDiff = infoRows.filter(r => !near(r.st, r.app));
+  async function applyInfo() {
+    const pickd = infoDiff.filter(r => infoOn.has(r.k));
+    if (!pickd.length) return;
+    const patch = {};
+    for (const r of pickd) patch[r.k === 'debt' ? 'card_debt' : 'card_limit'] = r.st;
+    await saveFin({ ...fin, ...patch });
+    celebrate('Kart bilgileri eşitlendi!');
+  }
+
+  return html`
+    <div class="card hero">
+      <div class="muted">Hesap özeti · kesim ${fmtDate(info.cut)}</div>
+      <div class="big">${tl(info.debt ?? 0)}</div>
+      <div class="rows">
+        ${info.due && html`<div class="row"><span>Son ödeme</span><b>${fmtDate(info.due)}</b></div>`}
+        ${info.min != null && html`<div class="row"><span>Asgari tutar</span><b>${tl(info.min)}</b></div>`}
+        <div class="row"><span>Doğru</span><b class="pos">${ok.length}</b></div>
+        <div class="row"><span>Tutarı farklı</span><b class=${diff.length ? 'warn' : ''}>${diff.length}</b></div>
+        <div class="row"><span>Uygulamada yok</span><b class=${missing.length ? 'warn' : ''}>${missing.length}</b></div>
+      </div>
+    </div>
+
+    ${missing.length > 0 && html`<${Group} title=${`Uygulamada yok (${missing.length})`} total=${sumBy(missing, x => x.amount)}>${missing.map(x => row(x, true))}<//>`}
+    ${diff.length > 0 && html`<${Group} title=${`Tutarı farklı (${diff.length}) · sadece tutar değişir`}>${diff.map(x => row(x, true))}<//>`}
+    ${fixable.length > 0 && html`<button class="primary" disabled=${busy || !chosen.length} onClick=${apply}>
+      ${busy ? 'Aktarılıyor…' : `Seçilenleri ekstreden aktar (${chosen.length})`}</button>`}
+    ${!fixable.length && html`<p class="hint center">Ekstredeki bütün işlemler uygulamada doğru görünüyor 🎉</p>`}
+
+    ${infoRows.length > 0 && html`<${Group} title="Hesap bilgileri">
+      ${infoRows.map(r => {
+        const same = near(r.st, r.app);
+        return html`<div class="item" key=${r.k}>
+          ${same ? html`<span class="check on" aria-hidden="true">✓</span>`
+            : html`<button class=${'check' + (infoOn.has(r.k) ? ' on' : '')} aria-label="Eşitle"
+                onClick=${() => { const n = new Set(infoOn); n.has(r.k) ? n.delete(r.k) : n.add(r.k); setInfoOn(n); }}>${infoOn.has(r.k) ? '✓' : ''}</button>`}
+          <div class="grow"><div class="title">${r.label}</div><div class="sub">${same ? 'uygulamayla aynı' : `uygulamada ${tl(r.app)}`}</div></div>
+          <div class="amt">${tl(r.st)}</div>
+        </div>`;
+      })}
+      ${info.spend != null && html`<div class="row pad"><span>Dönem içi harcamalar<small class="muted"> · uygulamada eşleşen ${tl(appSpend)}</small></span><b>${tl(info.spend)}</b></div>`}
+      ${info.instLeft != null && html`<div class="row pad"><span>Kalan taksit toplamı<small class="muted"> · uygulamada ${tl(c.instLeft)}</small></span><b class=${near(Math.round(c.instLeft * 100) / 100, info.instLeft) ? 'pos' : 'warn'}>${tl(info.instLeft)}</b></div>`}
+    <//>
+    ${infoDiff.length > 0 && html`<button class="primary ghost" disabled=${!infoDiff.some(r => infoOn.has(r.k))} onClick=${applyInfo}>Seçilen bilgileri ekstreye eşitle</button>`}`}
+
+    ${ok.length > 0 && html`<${FoldGroup} id="stmt-ok" title="Doğru" count=${ok.length} total=${sumBy(ok, x => x.amount)}>${ok.map(x => row(x, false))}<//>`}
+    ${pays.length > 0 && html`<${FoldGroup} id="stmt-pay" title="Karta yapılan ödemeler" count=${pays.length} total=${sumBy(pays, x => x.amount)}>
+      ${pays.map(x => html`<div class="row pad" key=${keyOf(x)}><span>${x.name}<small class="muted"> · ${fmtDate(x.date)}</small></span><b class="pos">+ ${tl(x.amount)}</b></div>`)}<//>`}
+    ${c.extra.length > 0 && html`<${FoldGroup} id="stmt-extra" title="Uygulamada var, bu ekstrede yok" count=${c.extra.length}>
+      ${c.extra.map(e => html`<div class="row pad" key=${e.id}><span>${e.name}<small class="muted"> · ${fmtDate(e.date)}</small></span><b>${tl(e.amount)}</b></div>`)}
+      <div class="row pad"><small class="muted">Sonraki ekstreye kalmış ya da yanlış girilmiş olabilir; gerekirse Kayıtlar'dan düzelt.</small></div><//>`}
+    <button class="link small center-block" onClick=${() => ref.current.click()}>Başka bir hesap özeti seç</button>
+    ${upload}`;
 }
 
 const BANK_STATUS = { pending: 'Bekliyor', added: 'Harcama olarak eklendi', matched: 'Eşleştirildi', ignored: 'Yok sayıldı' };
