@@ -47,15 +47,34 @@ const bm = d => {
   const s = String(d).slice(0, 10), m = s.slice(0, 7);
   return s.length < 10 || m < PERIOD_START || s >= payday(m) ? m : addM(m, -1);
 };
-/** Bir anın bütçe günü: maaş günü öğlen 12'ye kadar maaş henüz yatmamış sayılır, bir önceki güne yazılır */
+/** Maaşın yattığı an: App her çizimde kullanıcının banka kayıtlarını ve gelirini buraya koyar */
+const SAL = { uid: null, evs: null, income: 0 };
+const dayOf = t => { const d = new Date(t); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+/** Maaş sayılacak en düşük giriş: gelirin yarısı (gelir girilmediyse 5.000) */
+const salaryMin = () => Math.max(5000, (Number(SAL.income) || 0) * 0.5);
+/** Bu banka hareketi maaş mı: maaş günü kullanıcının hesabına gelirinin en az yarısı kadar giriş */
+const isSalaryEv = e => !!e && e.kind === 'in' && e.owner_id === SAL.uid && !!e.occurred_at
+  && Number(e.amount) >= salaryMin() && dayOf(e.occurred_at) === payday(dayOf(e.occurred_at).slice(0, 7));
+/** O ayın maaşının bankaya ilk geliş anı (ms) ya da null */
+function salaryAt(m) {
+  const hit = (SAL.evs || []).filter(e => isSalaryEv(e) && dayOf(e.occurred_at) === payday(m)).map(e => Date.parse(e.occurred_at));
+  return hit.length ? Math.min(...hit) : null;
+}
+/** Banka mesajları bağlı mı (bağlı değilse maaş görülemez, öğlen 12 kuralı kullanılır) */
+const bankLinked = () => (SAL.evs || []).some(e => e.owner_id === SAL.uid);
+/** Bir anın bütçe günü: maaş günü maaş bankaya yatana kadar önceki güne yazılır.
+ *  Banka mesajı bağlı değilse öğlen 12'ye kadar; maaş gün boyu görünmezse o gün tümüyle önceki aya sayılır. */
 const budgetDay = (t = new Date()) => {
   const d = new Date(t);
-  const s = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`, m = s.slice(0, 7);
-  if (m < PERIOD_START || s !== payday(m) || d.getHours() >= 12) return s;
+  const s = dayOf(d), m = s.slice(0, 7);
+  if (m < PERIOD_START || s !== payday(m)) return s;
+  const at = bankLinked() ? salaryAt(m) : null;
+  const paid = at != null ? d.getTime() >= at : !bankLinked() && d.getHours() >= 12;
+  if (paid) return s;
   const y = new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1);
-  return `${y.getFullYear()}-${pad(y.getMonth() + 1)}-${pad(y.getDate())}`;
+  return dayOf(y);
 };
-/** İçinde bulunduğumuz bütçe ayı (maaş günü öğlen 12'ye kadar önceki ay) */
+/** İçinde bulunduğumuz bütçe ayı (maaş günü maaş yatana kadar önceki ay; maaş gelmezse ertesi gün geçilir) */
 const thisMonth = () => bm(budgetDay());
 /** Bütçe ayının ilk günü */
 const monthStart = m => (m >= PERIOD_START ? payday(m) : `${m}-01`);
@@ -2812,6 +2831,14 @@ function BankInboxSheet({ ctx, events, onNew, onClose }) {
   const ev = events[i];
   const go = n => { setIdx(n); setOpen(false); };
   const done = (e, p) => { setOpen(false); return actions.patch('bank_events', e.id, p); };
+  // Çift dokunma koruması: işlem sürerken ve bittikten sonra kısa bir süre (sıradaki hareket ekrana gelirken) dokunuşlar yok sayılır
+  const busyRef = useRef(false);
+  const [busy, setBusy] = useState(false);
+  const once = fn => async (...a) => {
+    if (busyRef.current) return;
+    busyRef.current = true; setBusy(true);
+    try { await fn(...a); } finally { setTimeout(() => { busyRef.current = false; setBusy(false); }, 700); }
+  };
   if (!ev) return null;
 
   async function match(c) {
@@ -2861,6 +2888,7 @@ function BankInboxSheet({ ctx, events, onNew, onClose }) {
   }
   // Gelen para hesaplaşma değilse (kendi hesabından ya da başka biri gönderdi): o bütçe ayının nakdine eklenir
   async function addIncome() {
+    if (Number(ev.amount) >= salaryMin() && !confirm(`${tl(ev.amount)} maaşın gibi görünüyor. Maaş gelirine zaten sayılıyor; eklersen iki kez sayılır.\n\nMaaş değilse (ek bir para geldiyse) yine de eklensin mi?`)) return;
     const day = budgetDay(ev.occurred_at);
     const id = crypto.randomUUID ? crypto.randomUUID() : undefined;
     const ok = await actions.add('expenses', {
@@ -2903,20 +2931,20 @@ function BankInboxSheet({ ctx, events, onNew, onClose }) {
         ${top && !isCardPay && html`<div class="suggest">
           <div class="muted small">${top.score === 3 ? 'Geçen sefer bu işyerini bununla eşleştirdin' : top.score === 2 ? 'İşyeri adı bu kayıtla uyuşuyor' : 'Tutarı birebir aynı'}</div>
           <div class="suggest-row"><span><b>${top.it.name}</b><small class="muted"> · ${top.kind}</small></span><b>${tl(top.amount)}</b></div>
-          <button class="primary" onClick=${() => match(top)}>✓ Doğru, eşleştir</button>
+          <button class="primary" disabled=${busy} onClick=${once(() => match(top))}>✓ Doğru, eşleştir</button>
         </div>`}
         <div class="modal-actions">
-          ${isCardPay && html`<button class="primary" onClick=${cardPay}>💳 Kart ödemesi olarak kaydet</button>`}
+          ${isCardPay && html`<button class="primary" disabled=${busy} onClick=${once(cardPay)}>💳 Kart ödemesi olarak kaydet</button>`}
           <button class=${isCardPay || top ? 'primary ghost' : 'primary'} onClick=${() => setOpen(!open)}>🔗 ${isIn ? 'Hesaplaşma geldi' : top ? 'Hayır, başka bir kayıtla eşleştir' : 'Bir kayıtla eşleştir'}</button>
-          ${!isIn && html`<button class="primary ghost" onClick=${() => onNew(ev)}>+ ${ev.kind === 'card' ? 'Yeni harcama olarak ekle' : 'Harcama olarak ekle'}</button>`}
-          ${isIn && html`<button class="primary ghost" onClick=${addIncome}>➕ Bakiyeme ekle<small class="muted"> · ${monthName(bm(budgetDay(ev.occurred_at)))}</small></button>`}
-          ${!isIn && !isCardPay && html`<button class="primary ghost" onClick=${addFixed}>🔁 Yeni aylık ödeme olarak ekle</button>`}
-          <button class="link" onClick=${() => done(ev, { status: 'ignored' })}>${ev.kind === 'card' ? 'Yok say' : ev.kind === 'out' ? 'Kendi hesabıma gönderdim · yok say' : 'Kendi hesabımdan geldi · yok say'}</button>
+          ${!isIn && html`<button class="primary ghost" disabled=${busy} onClick=${() => onNew(ev)}>+ ${ev.kind === 'card' ? 'Yeni harcama olarak ekle' : 'Harcama olarak ekle'}</button>`}
+          ${isIn && html`<button class="primary ghost" disabled=${busy} onClick=${once(addIncome)}>➕ Bakiyeme ekle<small class="muted"> · ${monthName(bm(budgetDay(ev.occurred_at)))}</small></button>`}
+          ${!isIn && !isCardPay && html`<button class="primary ghost" disabled=${busy} onClick=${once(addFixed)}>🔁 Yeni aylık ödeme olarak ekle</button>`}
+          <button class="link" disabled=${busy} onClick=${once(() => done(ev, { status: 'ignored' }))}>${ev.kind === 'card' ? 'Yok say' : ev.kind === 'out' ? 'Kendi hesabıma gönderdim · yok say' : 'Kendi hesabımdan geldi · yok say'}</button>
         </div>
         ${open && html`<div class="detail-inline modal-list">
           <div class="row pad"><small class="muted">${isIn ? 'Hangi hesaplaşmanın parası geldi?' : 'Hangi kaydınla aynı? Tutarı en yakın olanlar üstte.'}</small></div>
           ${cands.map(c => html`
-            <button class="item" key=${c.table + c.it.id} onClick=${() => match(c)}>
+            <button class="item" key=${c.table + c.it.id} disabled=${busy} onClick=${once(() => match(c))}>
               <span class="grow"><span class="title">${c.it.name}</span><span class="sub">${c.kind} · ${c.sub}${c.it.on_card ? ' · kart' : ''}</span></span>
               <span class="amt">${tl(c.amount)}</span></button>`)}
           ${!cands.length && html`<${Empty}>${isIn ? 'Bekleyen bir hesaplaşma yok; kendi hesabından geldiyse yok say' : ev.kind === 'out' ? 'Eşleşecek kayıt yok; harcama olarak ekle ya da yok say' : 'Eşleşecek kayıt yok, yeni harcama olarak ekle'}<//>`}
@@ -2943,7 +2971,7 @@ function bankSince(rows, fin, uid) {
     && !linked.has(e.id) && !/bakiye eşitleme/.test(e.name || ''))
     .filter(e => { const i = added.indexOf(Number(e.amount)); if (i < 0) return true; added.splice(i, 1); return false; });
   const list = [
-    ...ev.map(e => ({ id: e.id, name: e.merchant || BANK_KIND[e.kind], at: e.occurred_at, amt: e.kind === 'in' ? Number(e.amount) : -Number(e.amount) })),
+    ...ev.map(e => ({ id: e.id, name: e.matched_table === 'maas' || isSalaryEv(e) ? '💼 Maaş' : e.merchant || BANK_KIND[e.kind], at: e.occurred_at, amt: e.kind === 'in' ? Number(e.amount) : -Number(e.amount) })),
     ...manual.map(e => ({ id: e.id, name: e.name, at: e.created_at, amt: -Number(e.amount) })),
   ].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
   return { list, now: Math.round((Number(fin.bank_balance) + sumBy(list, x => x.amt)) * 100) / 100 };
@@ -2975,7 +3003,10 @@ function guessCat(name) {
 
 /** İki işyeri adı aynı yer mi: 4+ harfli bir kelime diğerinin içinde geçiyorsa ("OZ SAHINLER MARKET" ~ "Oz Sahinler- Su") */
 const STOP = new Set(['market', 'bill', 'fatura', 'mpass', 'online', 'store', 'magaza', 'mağaza', 'sanayi', 'turizm', 'ticaret']);
+// Türkçe harfler sadeleştirilir: "digitürk" ~ "WWW.DIGITURK.COM.TR"
+const foldTr = s => lower(s || '').replace(/[çğıöşü]/g, ch => 'cgiosu'['çğıöşü'.indexOf(ch)]);
 function sameMerchant(a, b) {
+  a = foldTr(a); b = foldTr(b);
   const words = s => lower(s || '').split(/[^a-zçğıöşü0-9]+/).filter(w => w.length >= 4 && !STOP.has(w));
   const ka = merchantKey(a), kb = merchantKey(b);
   if (!ka || !kb) return false;
@@ -3029,7 +3060,11 @@ function compareStatement(st, rows, uid, links = {}, nope = []) {
       const ok = pool.find(i => near(i.monthly_amount, x.amount) && instSame(i, x));
       if (ok) return take(ok, 'installments', 'ok', x);
       const d = pool.find(i => near(i.monthly_amount, x.amount)) || pool.find(i => nameOf(i, x.name) && instSame(i, x)) || pool.find(i => nameOf(i, x.name));
-      return d ? take(d, 'installments', 'diff', x) : { ...x, status: 'missing' };
+      if (d) return take(d, 'installments', 'diff', x);
+      // Yıllık üyeliğin taksitle ödenmesi (Digitürk gibi): uygulamada "her ay" olarak tutuluyorsa o kayıtla eşleşir
+      const fx = fixed.filter(f => !used.has(f.id));
+      const f = fx.find(f => near(f.amount, x.amount) && nameOf(f, x.name)) || fx.find(f => nameOf(f, x.name));
+      return f ? take(f, 'fixed_payments', near(f.amount, x.amount) ? 'ok' : 'diff', x) : { ...x, status: 'missing' };
     }
     const pool = exps.filter(e => !used.has(e.id) && dayDiff(e.date, x.date) <= 4);
     const byDay = (a, b) => dayDiff(a.date, x.date) - dayDiff(b.date, x.date);
@@ -3056,7 +3091,7 @@ function compareStatement(st, rows, uid, links = {}, nope = []) {
   for (const e of extra) {
     const tol = e.table === 'fixed_payments' ? 0.1 : 0.03;
     const cands = lines.filter(x => x.status !== 'payment' && !links[stmtSig(x)] && !taken.has(x.line) && !no.has(`${stmtSig(x)}|${e.it.id}`)
-      && (e.table === 'installments' ? !!x.inst : !x.inst)
+      && (e.table === 'installments' ? !!x.inst : e.table === 'fixed_payments' || !x.inst)
       && (e.table !== 'expenses' || dayDiff(e.it.date, x.date) <= 7)
       && Math.abs(x.amount - e.amount) <= Math.max(1, e.amount * tol));
     cands.sort((a, b) => (RANK[a.status] - RANK[b.status]) || Math.abs(a.amount - e.amount) - Math.abs(b.amount - e.amount));
@@ -3541,6 +3576,9 @@ function App() {
   // Her açılışta Bu Ay'dan başla
   const [tab, setTab] = useState('month');
 
+  // Ay geçişi maaşın bankaya yatmasına bağlı: budgetDay() kullanıcının banka kayıtlarına bakar
+  SAL.uid = user?.id; SAL.evs = rows?.bank_events || null; SAL.income = Number(fin?.income) || 0;
+
   const hist = useRef([]);
   const edge = useRef(null);
   const goTab = id => {
@@ -3606,6 +3644,13 @@ function App() {
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, [phase]);
+
+  // Maaş hareketi gelen kutusuna sorulmaz: gelir zaten sayıldığı için kendiliğinden "maaş" diye kapatılır (iki kez eklenmesin)
+  useEffect(() => {
+    if (phase !== 'ready' || SHOW || !rows || !user) return;
+    (rows.bank_events || []).filter(e => e.status === 'pending' && isSalaryEv(e))
+      .forEach(e => actions.patch('bank_events', e.id, { status: 'matched', matched_table: 'maas' }));
+  }, [phase, rows?.bank_events, fin?.income]);
 
   // Maaş gününden itibaren: bu ayın kart ödemesi girilmediyse sor ("Sonra gireceğim" o gün için susturur)
   useEffect(() => {
@@ -3689,7 +3734,7 @@ function App() {
       setMembers(ms => ms.map(m => (m.user_id === user.id ? { ...m, notify_prefs: prefs } : m)));
       await guard(() => api.saveNotifyPrefs(user.id, prefs));
     } };
-  const bankPending = (rows.bank_events || []).filter(e => ['card', 'out', 'in'].includes(e.kind) && e.status === 'pending' && e.owner_id === user.id)
+  const bankPending = (rows.bank_events || []).filter(e => ['card', 'out', 'in'].includes(e.kind) && e.status === 'pending' && e.owner_id === user.id && !isSalaryEv(e))
     .sort((a, b) => (a.occurred_at < b.occurred_at ? -1 : 1));
   const Screen = { month: MonthScreen, shop: ListsScreen, settle: SettleScreen, records: RecordsScreen, money: BenScreen }[tab] || MonthScreen;
 
