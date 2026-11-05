@@ -891,6 +891,20 @@ async function saveCardPayment(ctx, month, paid) {
 
 /** Kart borcuna ödeme (ay içinde ara ödeme ya da bankadan gelen ödeme SMS'i): o ayın kart ödemesine eklenir,
  *  nakitten düşer ve kullanılan limit ödenen kadar azalır. rebase=false: limit bankanın SMS'inden zaten güncellendi. */
+/** Ayın kart ödemesini verilen tutara getirir. Fark kullanılabilir limite yansır: eski tutar ister limit güncellemesinden
+ *  önce (bankanın limitinde) ister sonra (uygulamanın hesabında) sayılmış olsun, şu anki kullanılan = şimdiki + eski − yeni.
+ *  Limit tarihi bugüne çekilir; böylece bu ödeme bir daha düşülmez. */
+async function setCardPayment(ctx, month, next) {
+  const { rows, uid, fin, saveFin } = ctx;
+  const prev = Number(cardFor(rows, uid, month)?.amount) || 0;
+  const usedNow = cardUsedNowFor(fin, rows, uid);
+  const ok = await saveCardPayment(ctx, month, next);
+  if (ok !== false && Number(fin.card_limit) > 0 && Math.abs(next - prev) >= 0.01) {
+    await saveFin({ ...fin, card_used: Math.max(0, Math.round((usedNow + prev - next) * 100) / 100), card_used_at: today() });
+  }
+  return ok;
+}
+
 async function payCard(ctx, amount, month = thisMonth(), rebase = true) {
   const { rows, uid, fin, saveFin } = ctx;
   const prev = Number(cardFor(rows, uid, month)?.amount) || 0;
@@ -944,16 +958,7 @@ function CardSheet({ ctx, month, prompt, onClose }) {
     if (busy) return;
     if (value == null && !(amount > 0)) return setErr('Ödediğin tutarı yaz (ödeme yoksa aşağıdan seç)');
     setBusy(true);
-    const next = Number(value ?? amount) || 0, prev = Number(card?.amount) || 0;
-    // Ödeme tutarı değişince fark kullanılabilir limite yansır. Eski tutar ister limit güncellemesinden önce
-    // (bankanın limitinde) ister sonra (uygulamanın hesabında) sayılmış olsun, şu anki kullanılan = şimdiki + eski − yeni.
-    // Limit tarihi bugüne çekilir; böylece bu ödeme bir daha düşülmez.
-    const { fin, saveFin } = ctx;
-    const usedNow = cardUsedNowFor(fin, rows, uid);
-    const ok = await saveCardPayment(ctx, month, next);
-    if (ok !== false && Number(fin.card_limit) > 0 && Math.abs(next - prev) >= 0.01) {
-      await saveFin({ ...fin, card_used: Math.max(0, Math.round((usedNow + prev - next) * 100) / 100), card_used_at: today() });
-    }
+    const ok = await setCardPayment(ctx, month, Number(value ?? amount) || 0);
     if (ok !== false) onClose();
     setBusy(false);
   }
@@ -2380,7 +2385,12 @@ function OzetGroups({ ctx, m, view, focus }) {
       <div class="row pad"><span>Bu ay yaptığın kart ödemesi</span><b>${tl(b.cardPaid)}</b></div>
       ${b.cardMin != null && html`<div class="row pad"><small class="muted">${b.cardPaid + 0.005 >= b.cardMin
         ? 'Asgari karşılandı ✓ · hesapta ödediğin tutar düşülür'
-        : `Hesapta asgari tutar düşülür · asgariye ${tl(Math.round((b.cardMin - b.cardPaid) * 100) / 100)} kaldı`}</small></div>`}`, 'out', true)}
+        : `Hesapta asgari tutar düşülür · asgariye ${tl(Math.round((b.cardMin - b.cardPaid) * 100) / 100)} kaldı`}</small></div>`}
+      ${b.cardMin != null && b.cardPaid + 0.005 < b.cardMin && m === thisMonth() && html`<div class="row pad"><button class="primary ghost small" onClick=${async () => {
+        // Banka ödemeyi zaten gördü: sadece tutar güncellenir, limit bankadan gelen bilgiyle kalır
+        if (!confirm(`Bankada asgari ödenmiş görünüyorsa bu ayın kart ödemesi ${tl(b.cardMin)} olarak kaydedilir.\n\nKullanılabilir limit değişmez; farklıysa "Kart bilgilerini güncelle"den bankadaki limiti yaz.`)) return;
+        if (await saveCardPayment(ctx, m, b.cardMin) !== false) celebrate('Asgari ödendi ✓');
+      }}>✓ Asgariyi ödedim</button></div>`}`, 'out', true)}
     ${g('fixed', 'Aylık ödemeler', b.fixed, renderItems(itemsOf('fixed', b.items.fixed, 'fixed_payments', 'fixed')), 'out', !b.items.fixed.length, unpaidNote(b.items.fixed))}
     ${g('installment', 'Taksitler', b.installment, renderItems(itemsOf('installment', b.items.installment, 'installments', 'installment')), 'out', !b.items.installment.length, unpaidNote(b.items.installment))}
     ${g('expense', 'Harcamalar', b.expense, renderItems(itemsOf('expense', b.items.expense, 'expenses', 'expense')), 'out', !b.items.expense.length, unpaidNote(b.items.expense))}
