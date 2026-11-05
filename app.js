@@ -610,6 +610,7 @@ function MonthScreen({ ctx }) {
   const cardAmt = card ? Number(card.amount) || 0 : 0;
   const [cardOpen, setCardOpen] = useState(false);
   const [balOpen, setBalOpen] = useState(false);
+  const [endOpen, setEndOpen] = useState(false);
   const [partOpen, setPartOpen] = useState(false);
   const [taksitOpen, setTaksitOpen] = useState(false);
   const [detail, setDetail] = useState(null);
@@ -662,7 +663,10 @@ function MonthScreen({ ctx }) {
   const bank = m === thisMonth() && fin.bank_balance != null ? Number(fin.bank_balance) : null;
   // Maaş yatmadan önce bankada bu ayın geliri yok
   const prePay = m === thisMonth() && today() < payday(m);
-  const expected = left + b.unpaid - (prePay ? income : 0);
+  const expected = left + b.unpaid - b.pendingIn - (prePay ? income : 0);
+  // Üst kart: bankadaki para (son bakiye + sonraki hareketler) ve ondan ay sonuna: ödenmemişler düşülür, gelecekler eklenir
+  const bankNow = bank != null ? (bankSince(rows, fin, uid).now ?? bank) : null;
+  const endLeft = bankNow != null ? Math.round((bankNow - b.unpaid + b.pendingIn + (prePay ? income : 0)) * 100) / 100 : null;
 
   const toggle = makeToggle(ctx, m);
   const partner = ctx.members.find(x => x.user_id !== uid);
@@ -706,7 +710,39 @@ function MonthScreen({ ctx }) {
     <div class="carousel" onTouchStart=${onTouchStart} onTouchEnd=${onTouchEnd}>
       <div class="track" style=${`transform: translateX(${page === 0 ? 0 : -50}%)`}>
         <section class="page">
-      <div class="card hero glass">
+      ${bankNow != null ? html`<div class="card hero glass">
+        <div class="hero-top">
+          <div class="grow">
+            <div class="muted">Bankadaki bakiye</div>
+            <div class=${'big ' + (bankNow < 0 ? 'neg' : '')}><${CountUp} value=${bankNow} /></div>
+            <div class="sub">Tahmini şu an · son banka bakiyesi ${whenShort(fin.bank_balance_at)}: ${tl(bank)}</div>
+          </div>
+          ${income > 0 && html`<${Ring} ratio=${b.out / income} label="harcandı" />`}
+        </div>
+        <div class="rows">
+          <${BankSinceRows} ctx=${ctx} hideNow=${true} />
+          <button class="row end-row" onClick=${() => setEndOpen(!endOpen)} aria-expanded=${endOpen}>
+            <span><span class=${'chev' + (endOpen ? ' open' : '')}>›</span>Ay sonunda kalan</span><b class=${endLeft < 0 ? 'neg' : 'pos'}>${tl(endLeft)}</b></button>
+          ${endOpen && html`
+            <div class="row sub-row"><span>Bankadaki bakiye<small class="muted"> · şu an</small></span><b>${tl(bankNow)}</b></div>
+            ${b.unpaidList.length > 0 && html`<div class="row head-row"><small class="muted">Henüz ödenmeyenler düşülür</small></div>`}
+            ${b.unpaidList.map((x, k) => html`<div class="row sub-row" key=${'u' + k}><span>${x.name}</span><b class="neg">${signed(-x.amt).text}</b></div>`)}
+            ${b.pendingIn >= 0.01 && html`<div class="row sub-row"><span>Hesaplaşmadan gelecek</span><b class="pos">${signed(b.pendingIn).text}</b></div>`}
+            ${prePay && income > 0 && html`<div class="row sub-row"><span>Maaş<small class="muted"> · henüz yatmadı</small></span><b class="pos">${signed(income).text}</b></div>`}
+            ${!b.unpaidList.length && b.pendingIn < 0.01 && !prePay && html`<div class="row sub-row"><small class="muted">Ödenmemiş kalem yok; bankadaki para ay sonuna kadar kalır</small></div>`}
+            <div class="row total"><span>= Ay sonunda kalan</span><b class=${endLeft < 0 ? 'neg' : 'pos'}>${tl(endLeft)}</b></div>
+            ${Math.abs(endLeft - left) >= 1 && html`<div class="row sub-row"><small class="muted">Kayıtlara göre (aşağıdaki hesap) ay sonu ${tl(left)}. Aradaki ${tl(Math.abs(endLeft - left))} fark, uygulamaya girilmemiş ya da tiklenmemiş bir hareketten olabilir; "Bakiye eşitle" ile düzeltebilirsin.</small></div>`}
+            <div class="row-gap"></div>
+            <div class="row head-row"><small class="muted">Kayıtlara göre ayın hesabı</small></div>
+          <div class="row"><span>Gelir${prePay && income > 0 ? html`<small class="muted"> · maaş günü ${new Date(payday(m)).toLocaleDateString('tr-TR', { day: 'numeric', month: 'long' })}</small>` : ''}</span><b class=${income > 0 ? 'pos' : ''}>${signed(income).text}</b></div>
+          ${carryAmt !== 0 && html`<div class="row"><span>${AYLAR[Number(prev.slice(5)) - 1]} ayından devir</span><b class=${signed(carryAmt).tone}>${signed(carryAmt).text}</b></div>`}
+          ${prevLeft > 0 && html`<div class="row"><span>${AYLAR[Number(prev.slice(5)) - 1]} ayından kalan</span><b class="pos">${signed(prevLeft).text}</b></div>`}
+          ${settleGot > 0 && html`<div class="row"><span>Hesaplaşmadan gelen</span><b class="pos">${signed(settleGot).text}</b></div>`}
+          ${extraIn >= 0.01 && html`<div class="row"><span>Gelen para</span><b class="pos">${signed(extraIn).text}</b></div>`}
+          ${spent >= 0.01 && html`<div class="row"><span>Giden<small class="muted"> · aşağıdaki kalemler</small></span><b class="neg">${signed(-spent).text}</b></div>`}
+          <div class="row total"><span>= Kalan</span><b class=${left < 0 ? 'neg' : 'pos'}>${tl(left)}</b></div>`}
+        </div>
+      </div>` : html`      <div class="card hero glass">
         <div class="hero-top">
           <div class="grow">
             <div class="muted">Ay sonunda kalan</div>
@@ -727,7 +763,7 @@ function MonthScreen({ ctx }) {
             <div class="row"><span>Son banka bakiyesi<small class="muted"> · ${whenShort(fin.bank_balance_at)}</small></span><b>${tl(bank)}</b></div>
             <${BankSinceRows} ctx=${ctx} />`}
         </div>
-      </div>
+      </div>`}
           <${OzetGroups} ctx=${ctx} m=${m} view="nakit" />
           ${m === thisMonth() && html`<button class="item link-row" onClick=${() => setBalOpen(true)}>⚖️ Bakiye eşitle<span class="sub">Bankadaki bakiyenle aynı olsun</span></button>
           <button class="item link-row" onClick=${() => setPartOpen(true)}>💳 Kart borcunun bir kısmını öde<span class="sub">Nakitten düşer, kart limitin açılır</span></button>`}
@@ -2219,7 +2255,16 @@ function nakitBreakdown(rows, uid, m, income, members) {
   // Henüz ödenmedi: tiklenmemiş kendi nakit kalemlerim + henüz gönderilmemiş hesaplaşma borcum
   const settleOwed = settleIn < 0 && !prevDone ? -settleIn : 0;
   const unpaidItems = ['expense', 'installment', 'fixed'].flatMap(k => res.items[k]).filter(({ it }) => !isPaid(it, it.date ? bm(it.date) : m, uid));
-  res.unpaid = Math.round((settleOwed + sumBy(unpaidItems, ({ amt }) => amt)) * 100) / 100;
+  // Kart ödemesinin asgariye kalan kısmı da henüz bankadan çıkmadı
+  const cardRest = Math.round((cardAmt - cardPaid) * 100) / 100;
+  res.unpaidList = [
+    ...(settleOwed >= 0.01 ? [{ name: 'Hesaplaşma · gönderilecek', amt: settleOwed }] : []),
+    ...(cardRest >= 0.01 ? [{ name: 'Kart ödemesi · asgariye kalan', amt: cardRest }] : []),
+    ...unpaidItems.filter(({ amt }) => amt > 0).map(({ it, amt }) => ({ name: it.name, amt })),
+  ];
+  res.unpaid = Math.round(sumBy(res.unpaidList, x => x.amt) * 100) / 100;
+  // Gelecek ama henüz gelmemiş: eşten gelecek hesaplaşma
+  res.pendingIn = settleIn > 0 && !prevDone ? Math.round(settleIn * 100) / 100 : 0;
   res.out = cardAmt + res.expense + res.installment + res.fixed + Math.max(0, -res.settle);
   return res;
 }
@@ -3105,12 +3150,12 @@ function bankSince(rows, fin, uid) {
 }
 
 /** Son banka bakiyesinin altında: o saatten sonraki hareketler ve tahmini güncel bakiye */
-function BankSinceRows({ ctx }) {
+function BankSinceRows({ ctx, hideNow }) {
   const { list, now } = bankSince(ctx.rows, ctx.fin, ctx.uid);
   if (!list.length) return null;
   return html`
     ${list.map(x => html`<div class="row since" key=${x.id}><span>${x.name}<small class="muted"> · ${whenShort(x.at)}</small></span><b class=${x.amt > 0 ? 'pos' : 'neg'}>${signed(x.amt).text}</b></div>`)}
-    <div class="row since-now"><span>Tahmini şu an</span><b>${tl(now)}</b></div>`;
+    ${!hideNow && html`<div class="row since-now"><span>Tahmini şu an</span><b>${tl(now)}</b></div>`}`;
 }
 
 // ---------- Hesap özeti (ekstre) ile eşitleme ----------

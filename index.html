@@ -543,6 +543,13 @@
     .hero .rows .row.total { border-top: 2px solid color-mix(in srgb, var(--text) 35%, transparent); font-weight: 700; }
     .hero .rows .row.total b { font-size: 19px; }
     .hero .rows .row-gap { height: 10px; }
+    .hero .rows .end-row { width: 100%; background: none; border: 0; border-top: 2px solid color-mix(in srgb, var(--text) 35%, transparent); color: inherit; font: inherit; font-weight: 700; text-align: left; cursor: pointer; display: flex; justify-content: space-between; align-items: center; padding: 12px 0; margin: 0; }
+    .hero .rows .end-row b { font-size: 19px; }
+    .hero .rows .end-row .chev { display: inline-block; margin-right: 6px; transition: transform .2s; color: var(--muted); }
+    .hero .rows .end-row .chev.open { transform: rotate(90deg); }
+    .hero .rows .sub-row { font-size: 14px; }
+    .hero .rows .sub-row b { white-space: nowrap; }
+    .hero .rows .head-row { border-top: 0; padding-bottom: 0; }
     .hero .rows .row-gap + .row { border-top: 1px dashed var(--line); }
     .rows .row.since { padding: 6px 0 6px 14px; border-top: 0; font-size: 14px; }
     .rows .row.since b { font-weight: 600; }
