@@ -140,10 +140,18 @@ async function daily(admin: Admin) {
   let sent = await sendTo(admin, ids, '🧾 Bugünkü harcamalar', 'Bugün bir harcama girdin mi? Girmeyi unutma 🐶');
   // Kart hesap kesim günü: ekstreyi indirip kontrol ettirme hatırlatması (Ayarlar > Kredi kartı)
   const day = tr.getUTCDate();
-  const cut: string[] = (members ?? [])
-    .filter((m: { notify_prefs?: Record<string, unknown> }) => Number((m.notify_prefs ?? {}).cut_day) === day && (m.notify_prefs ?? {}).statement !== false)
-    .map((m: { user_id: string }) => m.user_id);
-  sent += await sendTo(admin, cut, '🧾 Kart ekstren kesildi', 'Ekstre PDF\'ini indir ve kontrol için gönder; ödemeyi yapınca kart ödemesini gir 💳');
+  // Kesim günü: kişinin kendi girdiği; girmediyse eşinin onun için girdiği (uygulamadaki cutDayOf ile aynı)
+  type M = { user_id: string; notify_prefs?: Record<string, unknown> };
+  const cutDayOf = (uid: string) => {
+    const own = Number(((members ?? []) as M[]).find(m => m.user_id === uid)?.notify_prefs?.cut_day);
+    if (own) return own;
+    for (const m of (members ?? []) as M[]) { const v = Number((m.notify_prefs?.cut_days as Record<string, unknown> | undefined)?.[uid]); if (v) return v; }
+    return null;
+  };
+  const cut: string[] = ((members ?? []) as M[])
+    .filter(m => cutDayOf(m.user_id) === day && (m.notify_prefs ?? {}).statement !== false)
+    .map(m => m.user_id);
+  sent += await sendTo(admin, cut, '🧾 Kart ekstren kesildi', 'Ekstreyi indir, Ben → Hesap özeti ile eşitle\'den yükle; kayıtların kontrol edilsin 💳');
   return { today, sent };
 }
 
