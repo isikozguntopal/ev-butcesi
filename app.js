@@ -655,8 +655,11 @@ function MonthScreen({ ctx }) {
   // Üst karttaki hesap: gelir + geçen aydan gelen − giden = kalan (giden, aşağıdaki kırmızı kalemlerin toplamı)
   const settleGot = Math.max(0, b.settle);
   // Eksi tutarlı kayıtlar (bankadan "bakiyeme ekle" ile gelen para, bakiye eşitleme) gider değil, gelen paradır
-  const extraIn = -sumBy(b.items.expense.filter(x => x.amt < 0), x => x.amt);
-  const spent = Math.round((income + carryAmt + prevLeft + settleGot + extraIn - left) * 100) / 100;
+  // Bakiye eşitleme harcama değil: üst kartta ayrı satır (artı ya da eksi); diğer eksi tutarlı kayıtlar gelen para
+  const isAdj = x => /bakiye eşitleme/.test(x.it.name || '');
+  const adjust = Math.round(-sumBy(b.items.expense.filter(isAdj), x => x.amt) * 100) / 100;
+  const extraIn = -sumBy(b.items.expense.filter(x => x.amt < 0 && !isAdj(x)), x => x.amt);
+  const spent = Math.round((income + carryAmt + prevLeft + settleGot + extraIn + adjust - left) * 100) / 100;
   // Sadece bu ayın kendi artısı (devir/geçen aydan kalan hariç)
   const net = b.left - b.carry;
   // Bankanın e-postayla bildirdiği son bakiye (sadece bu ay ekranında); fark = banka − uygulamaya göre şu an olması gereken
@@ -740,6 +743,7 @@ function MonthScreen({ ctx }) {
           ${prevLeft > 0 && html`<div class="row"><span>${AYLAR[Number(prev.slice(5)) - 1]} ayından kalan</span><b class="pos">${signed(prevLeft).text}</b></div>`}
           ${settleGot > 0 && html`<div class="row"><span>Hesaplaşmadan gelen</span><b class="pos">${signed(settleGot).text}</b></div>`}
           ${extraIn >= 0.01 && html`<div class="row"><span>Gelen para</span><b class="pos">${signed(extraIn).text}</b></div>`}
+          ${Math.abs(adjust) >= 0.01 && html`<div class="row"><span>Bakiye eşitleme<small class="muted"> · bankayla aynı olsun diye</small></span><b class=${signed(adjust).tone}>${signed(adjust).text}</b></div>`}
           ${spent >= 0.01 && html`<div class="row"><span>Giden<small class="muted"> · aşağıdaki kalemler</small></span><b class="neg">${signed(-spent).text}</b></div>`}
           <div class="row total"><span>= Kalan</span><b class=${left < 0 ? 'neg' : 'pos'}>${tl(left)}</b></div>`}
         </div>
@@ -758,6 +762,7 @@ function MonthScreen({ ctx }) {
           ${prevLeft > 0 && html`<div class="row"><span>${AYLAR[Number(prev.slice(5)) - 1]} ayından kalan</span><b class="pos">${signed(prevLeft).text}</b></div>`}
           ${settleGot > 0 && html`<div class="row"><span>Hesaplaşmadan gelen</span><b class="pos">${signed(settleGot).text}</b></div>`}
           ${extraIn >= 0.01 && html`<div class="row"><span>Gelen para</span><b class="pos">${signed(extraIn).text}</b></div>`}
+          ${Math.abs(adjust) >= 0.01 && html`<div class="row"><span>Bakiye eşitleme<small class="muted"> · bankayla aynı olsun diye</small></span><b class=${signed(adjust).tone}>${signed(adjust).text}</b></div>`}
           ${spent >= 0.01 && html`<div class="row"><span>Giden<small class="muted"> · aşağıdaki kalemler</small></span><b class="neg">${signed(-spent).text}</b></div>`}
           <div class="row total"><span>= Kalan</span><b class=${left < 0 ? 'neg' : 'pos'}>${tl(left)}</b></div>
           ${bank != null && html`<div class="row-gap"></div>
@@ -2396,7 +2401,7 @@ function OzetGroups({ ctx, m, view, focus }) {
       ${b.cardMin != null && b.cardPaid + 0.005 < b.cardMin && m === thisMonth() && html`<div class="row pad"><button class="primary ghost small" onClick=${() => markMinPaid(ctx, m, b.cardMin)}>✓ Asgariyi ödedim</button></div>`}`, 'out', true)}
     ${g('fixed', 'Aylık ödemeler', b.fixed, renderItems(itemsOf('fixed', b.items.fixed, 'fixed_payments', 'fixed')), 'out', !b.items.fixed.length, unpaidNote(b.items.fixed))}
     ${g('installment', 'Taksitler', b.installment, renderItems(itemsOf('installment', b.items.installment, 'installments', 'installment')), 'out', !b.items.installment.length, unpaidNote(b.items.installment))}
-    ${g('expense', 'Harcamalar', b.expense, renderItems(itemsOf('expense', b.items.expense, 'expenses', 'expense')), 'out', !b.items.expense.length, unpaidNote(b.items.expense))}
+    ${(() => { const ex = b.items.expense.filter(x => !/bakiye eşitleme/.test(x.it.name || '')); return g('expense', 'Harcamalar', sumBy(ex, x => x.amt), renderItems(itemsOf('expense', ex, 'expenses', 'expense')), 'out', !ex.length, unpaidNote(ex)); })()}
   </div>`;
 }
 
