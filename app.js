@@ -3130,7 +3130,7 @@ function BankInboxSheet({ ctx, events, onNew, onClose }) {
 }
 
 /** Son banka bakiyesinden sonra hesaptan çıkan/giren paralar: bankanın bildirdiği hareketler (yok sayılanlar hariç)
- *  ve sonradan elle girilen nakit harcamalar (bir banka hareketiyle eşleşenler iki kez sayılmaz). Kart harcamaları hesaptan düşmez. */
+ *  ve sonradan elle girilen, ödendi işaretli nakit harcamalar (bir banka hareketiyle eşleşenler iki kez sayılmaz). Kart harcamaları hesaptan düşmez. */
 function bankSince(rows, fin, uid) {
   if (fin.bank_balance == null || !fin.bank_balance_at) return { list: [], now: null };
   const at = Date.parse(fin.bank_balance_at);
@@ -3139,8 +3139,9 @@ function bankSince(rows, fin, uid) {
   const linked = new Set(ev.filter(e => e.matched_id).map(e => e.matched_id));
   // "Harcama olarak eklendi" hareketlerin oluşturduğu kayıt bağlı tutulmuyor: aynı tutarlı elle kayıt bir kez düşülür
   const added = ev.filter(e => e.status === 'added').map(e => Number(e.amount));
+  // "Henüz ödenmedi" denen harcama bankadan çıkmadı: ödendi tiklenince düşülür (ay sonu hesabında ayrıca "ödenecek" diye düşülüyor)
   const manual = rows.expenses.filter(e => e.payer_id === uid && Number(e.amount) > 0 && !onCardItem(e, 'expenses') && after(e.created_at)
-    && !linked.has(e.id) && !/bakiye eşitleme/.test(e.name || ''))
+    && !linked.has(e.id) && !/bakiye eşitleme/.test(e.name || '') && isPaid(e, bm(e.date), uid))
     .filter(e => { const i = added.indexOf(Number(e.amount)); if (i < 0) return true; added.splice(i, 1); return false; });
   const list = [
     ...ev.map(e => ({ id: e.id, name: e.matched_table === 'maas' || isSalaryEv(e) ? '💼 Maaş' : e.merchant || BANK_KIND[e.kind], at: e.occurred_at, amt: e.kind === 'in' ? Number(e.amount) : -Number(e.amount) })),
