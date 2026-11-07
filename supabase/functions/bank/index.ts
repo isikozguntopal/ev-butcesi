@@ -121,9 +121,22 @@ Deno.serve(async req => {
     if (!prev) continue;
     const { data: moves } = await admin.from('bank_events').select('kind, amount, msg_id').eq('owner_id', uid).in('kind', ['in', 'out'])
       .gt('created_at', prev.created_at).lt('created_at', d.created_at);
-    const net = (moves ?? []).filter(m => !m.msg_id.endsWith(':gap'))
-      .reduce((s, m) => s + (m.kind === 'in' ? 1 : -1) * Number(m.amount), 0);
-    const diff = Math.round((Number(d.amount) - Number(prev.amount) - net) * 100) / 100;
+    const bankMoves = (moves ?? []).filter(m => !m.msg_id.endsWith(':gap'));
+    const net = bankMoves.reduce((s, m) => s + (m.kind === 'in' ? 1 : -1) * Number(m.amount), 0);
+    // Uygulamaya elle girilip "ödendi" denen nakit kayıtlar da hesaptan çıkmış/girmiş paradır (banka her işleme SMS atmıyor).
+    // Bir banka hareketinden eklenen ya da onunla eşleşen kayıt zaten yukarıda sayıldı: aynı tutarlı olan bir kez atlanır.
+    const { data: manual } = await admin.from('expenses').select('id, name, amount, on_card, paid_months')
+      .eq('payer_id', uid).gt('created_at', prev.created_at).lt('created_at', d.created_at);
+    const { data: linked } = await admin.from('bank_events').select('matched_id').eq('owner_id', uid).not('matched_id', 'is', null);
+    const linkedIds = new Set((linked ?? []).map((l: { matched_id: string }) => l.matched_id));
+    const seen = bankMoves.map(m => Number(m.amount));
+    const manualNet = (manual ?? []).filter((e: { id: string; name: string; on_card: boolean; paid_months: string[] | null }) =>
+      e.on_card !== true && !linkedIds.has(e.id) && !/bakiye eşitleme/.test(e.name || '')
+      && (e.paid_months ?? []).some(k => k.endsWith(`:${uid}`)))
+      .filter((e: { amount: number }) => { const i = seen.indexOf(Math.abs(Number(e.amount))); if (i < 0) return true; seen.splice(i, 1); return false; })
+      .reduce((s: number, e: { amount: number }) => s - Number(e.amount), 0);
+    // Uygulamadaki hesap bankanın bakiyesini tutuyorsa (fark yok) bildirim de kayıt da gerekmez
+    const diff = Math.round((Number(d.amount) - Number(prev.amount) - net - manualNet) * 100) / 100;
     if (Math.abs(diff) < 1) continue;
     gaps.push({
       household_id: member.household_id, owner_id: uid, kind: diff > 0 ? 'in' : 'out', amount: Math.abs(diff),
