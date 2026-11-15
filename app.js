@@ -415,8 +415,13 @@ function ItemForm({ ctx, kind: initialKind, item, preset, month, onClose, onSave
   const [date, setDate] = useState(src.date || (base === thisMonth() ? budgetDay() : monthStart(base)));
   const [first, setFirst] = useState(mk(src.first_month) || base);
   const [last, setLast] = useState(mk(src.last_month) || addM(base, 2));
-  const [shared, setShared] = useState(!!src.shared);
-  const [split, setSplit] = useState(src.split || 'half');
+  // Harcama kimin: benim / yarı yarıya / eşimin. Kimin kartıyla ödendiği ayrı seçilir.
+  const [whose, setWhose] = useState(() => {
+    if (!src.shared) return 'me';
+    if (src.split === 'half' || !src.split) return 'half';
+    const owner = src.split === 'payer' ? src.payer_id : (src.payer_id === uid ? 'x' : uid);
+    return owner === uid ? 'me' : 'partner';
+  });
   const [payer, setPayer] = useState(src.payer_id || uid);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -426,6 +431,9 @@ function ItemForm({ ctx, kind: initialKind, item, preset, month, onClose, onSave
   const formRef = useRef(null);
   const partnerId = members.find(x => x.user_id !== uid)?.user_id;
   const nameOf = id => members.find(x => x.user_id === id)?.display_name || 'eşin';
+  // Kayda dönüşüm: kendi kartımla kendi harcamam ortak değildir; diğer her durum iki ekranda da görünür
+  const shared = !!partnerId && !(whose === 'me' && payer === uid);
+  const split = whose === 'half' ? 'half' : (whose === 'me') === (payer === uid) ? 'payer' : 'other';
 
   // Son taksit ilk taksitten önceye düşerse (ör. Ocak seçilip yıl değişmemişse) bir sonraki yıla al
   const pickLast = e => {
@@ -537,24 +545,18 @@ function ItemForm({ ctx, kind: initialKind, item, preset, month, onClose, onSave
           : `${count} taksit · toplam ${tl(amount * count)}${left !== count ? ` · bu ay dahil ${left} kaldı` : ''}`}</p>`}
 
       <div class="card form">
-        <label class="field toggle">
-          <span>Ortak alım<small>İkinizin ekranında da görünür</small></span>
-          <input type="checkbox" checked=${shared} onChange=${e => setShared(e.target.checked)} />
-        </label>
-        ${shared && html`
-          <label class="field"><span>Kimin kartı?</span>
-            <select value=${payer} onChange=${e => setPayer(e.target.value)}>
-              ${members.map(m => html`<option value=${m.user_id}>${m.user_id === uid ? `${m.display_name} (sen)` : m.display_name}</option>`)}
-            </select>
-          </label>
+        ${partnerId && html`
           <div class="field col">
-            <span>Harcama kimin?<small>Kartla ödeyen değil, harcamanın sahibi</small></span>
-            <${Seg} value=${split} onChange=${setSplit} options=${[['half', 'Yarı yarıya'],
-              ['payer', payer === uid ? 'Tamamı benim' : `Tamamı ${nameOf(payer)}`],
-              ['other', payer === uid ? `Tamamı ${nameOf(partnerId)}` : 'Tamamı benim']]} />
-            ${split === 'other' && html`<small class="muted">${payer === uid
-              ? `Senin kartından çıkar, tamamı ${nameOf(partnerId)} bütçesine yazılır; parayı sana hesaplaşmada öder.`
-              : `${nameOf(payer)} kartından çıkar, tamamı senin bütçene yazılır; parayı ona hesaplaşmada ödersin.`}</small>`}
+            <span>Harcama kimin?</span>
+            <${Seg} value=${whose} onChange=${setWhose} options=${[['me', 'Benim'], ['half', 'Ortak · yarı yarıya'], ['partner', nameOf(partnerId)]]} />
+          </div>
+          <div class="field col">
+            <span>Kimin kartıyla / hesabından ödendi?</span>
+            <${Seg} value=${payer} onChange=${setPayer} options=${[[uid, 'Benim'], [partnerId, nameOf(partnerId)]]} />
+            <small class="muted">${whose === 'half' ? `İkinizin ekranında görünür; ${payer === uid ? `${nameOf(partnerId)} yarısını sana` : `sen yarısını ${nameOf(payer)}'a`} öder.`
+              : whose === 'me' && payer !== uid ? `Senin harcaman: tamamı senin bütçene yazılır, parayı hesaplaşmada ${nameOf(payer)}'a gönderirsin.`
+              : whose === 'partner' && payer === uid ? `${nameOf(partnerId)} harcaması: tamamını hesaplaşmada sana öder.`
+              : whose === 'partner' ? `${nameOf(partnerId)} kendi harcaması; senin bütçene yazılmaz.` : 'Sadece senin harcaman.'}</small>
           </div>`}
         ${showPay && html`
           <div class="field col">
@@ -2466,7 +2468,9 @@ function CardPanel({ ctx, m, onLimit, onCard }) {
 const recSub = (x, m, uid, names) => [
   x.kind === 'expense' ? fmtDate(x.it.date) : x.kind === 'installment' ? `${inst.remaining(x.it, m)} taksit kaldı` : 'her ay',
   onCardItem(x.it, x.table) ? 'kartla' : 'nakit',
-  x.it.shared ? `ortak, ödeyen ${x.it.payer_id === uid ? 'sen' : names[x.it.payer_id] || 'eşin'}` : null,
+  x.it.shared ? (x.it.split === 'half' ? `ortak, ödeyen ${x.it.payer_id === uid ? 'sen' : names[x.it.payer_id] || 'eşin'}`
+    : x.it.payer_id === uid ? `${x.it.split === 'other' ? `${Object.entries(names).find(([k]) => k !== uid)?.[1] || 'eşin'} harcaması` : 'senin'}, senin kartın`
+    : `${x.it.split === 'other' ? 'senin harcaman' : `${names[x.it.payer_id] || 'eşin'} harcaması`}, ${names[x.it.payer_id] || 'eşin'} kartı`) : null,
 ].filter(Boolean).join(' · ');
 
 function CategoryGroups({ ctx, m, side, onToggle, onOpen }) {
