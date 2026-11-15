@@ -160,13 +160,18 @@ const inst = {
 function share(item, amount, uid) {
   if (!item.shared) return amount;
   if (item.split === 'half') return amount / 2;
+  if (item.split === 'other') return item.payer_id === uid ? 0 : amount;
   return item.payer_id === uid ? amount : 0;
 }
+/** Kartı ödemeyenin kart sahibine borcu: yarı yarıya → yarısı; tamamı diğerine ait ('other') → tamamı */
+const owesPayer = it => !!it.shared && (it.split === 'half' || it.split === 'other');
+const debtOf = (it, amount) => (it.split === 'other' ? amount : amount / 2);
 
 function sharedLabel(item, ctx) {
   if (!item.shared) return null;
   const payer = item.payer_id === ctx.uid ? 'senin kartın' : `${ctx.names[item.payer_id] || 'eşin'} kartı`;
   if (item.split === 'half') return `Ortak · yarı yarıya · ${payer}`;
+  if (item.split === 'other') return item.payer_id === ctx.uid ? `Tamamı ${ctx.names[(ctx.members || []).find(x => x.user_id !== ctx.uid)?.user_id] || 'eşin'} · senin kartın` : `Tamamı senin · ${payer}`;
   return `Ortak · tamamı ${payer}`;
 }
 
@@ -226,7 +231,7 @@ function settlementFor(rows, members, m) {
   const sentDirect = [];
   const settled = (rows.settlements || []).some(x => x.month === m && (x.sent_at || x.received_at));
   const add = (it, amount, kind, when) => {
-    if (!it.shared || it.split !== 'half' || !(it.payer_id in owe) || !amount) return;
+    if (!owesPayer(it) || !(it.payer_id in owe) || !amount) return;
     // Borçlu ortak harcamayı ay içinde "gönderdim" diye tiklediyse ayın 5'ine girmez.
     // ":sent" açık işarettir; işaretsiz eski tikler, o ayın hesaplaşması henüz işaretlenmediyse gönderilmiş sayılır.
     if (kind === 'Harcama') {
@@ -234,12 +239,12 @@ function settlementFor(rows, members, m) {
       const p = it.paid_months || [];
       const legacy = p.includes(debtorKey) && !p.includes(`${debtorKey}:settled`) && !settled;
       if (p.includes(`${debtorKey}:sent`) || legacy) {
-        sentDirect.push({ id: it.id, name: it.name, amount, debt: amount / 2, payer: it.payer_id, when });
+        sentDirect.push({ id: it.id, name: it.name, amount, debt: debtOf(it, amount), payer: it.payer_id, when });
         return;
       }
     }
-    const full = false;
-    const debt = amount / 2;
+    const full = it.split === 'other';
+    const debt = debtOf(it, amount);
     owe[it.payer_id === A ? B : A] += debt;
     lines.push({ id: it.id, name: it.name, kind, table: KIND_TABLE[{ Harcama: 'expense', Taksit: 'installment', 'Her ay': 'fixed' }[kind]], amount, debt, full, payer: it.payer_id, when });
   };
@@ -420,6 +425,7 @@ function ItemForm({ ctx, kind: initialKind, item, preset, month, onClose, onSave
   const [payPick, setPayPick] = useState(null);
   const formRef = useRef(null);
   const partnerId = members.find(x => x.user_id !== uid)?.user_id;
+  const nameOf = id => members.find(x => x.user_id === id)?.display_name || 'eşin';
 
   // Son taksit ilk taksitten önceye düşerse (ör. Ocak seçilip yıl değişmemişse) bir sonraki yıla al
   const pickLast = e => {
@@ -439,7 +445,7 @@ function ItemForm({ ctx, kind: initialKind, item, preset, month, onClose, onSave
   if (method === 'unpaid' && kind !== 'expense') method = 'cash';
   const showMethod = !shared || payer === uid;
   // Ortak yarı yarıya harcamada payın ne zaman ödeneceği: hesaplaşma günü (sonraki ayın 5'i) ya da harcama günü (doğrudan)
-  const showPay = kind === 'expense' && shared && split === 'half' && !!partnerId;
+  const showPay = kind === 'expense' && shared && split !== 'payer' && !!partnerId;
   const debtor = payer === uid ? partnerId : uid;
   const sentKey = `${paidKey(mk(date), debtor)}:sent`;
   const cut = cutDayOf(members, payer);
@@ -542,8 +548,13 @@ function ItemForm({ ctx, kind: initialKind, item, preset, month, onClose, onSave
             </select>
           </label>
           <div class="field col">
-            <span>Bütçelere nasıl yansısın?</span>
-            <${Seg} value=${split} onChange=${setSplit} options=${[['half', 'Yarı yarıya'], ['payer', 'Tamamı kart sahibine']]} />
+            <span>Harcama kimin?<small>Kartla ödeyen değil, harcamanın sahibi</small></span>
+            <${Seg} value=${split} onChange=${setSplit} options=${[['half', 'Yarı yarıya'],
+              ['payer', payer === uid ? 'Tamamı benim' : `Tamamı ${nameOf(payer)}`],
+              ['other', payer === uid ? `Tamamı ${nameOf(partnerId)}` : 'Tamamı benim']]} />
+            ${split === 'other' && html`<small class="muted">${payer === uid
+              ? `Senin kartından çıkar, tamamı ${nameOf(partnerId)} bütçesine yazılır; parayı sana hesaplaşmada öder.`
+              : `${nameOf(payer)} kartından çıkar, tamamı senin bütçene yazılır; parayı ona hesaplaşmada ödersin.`}</small>`}
           </div>`}
         ${showPay && html`
           <div class="field col">
@@ -578,12 +589,12 @@ function makeToggle(ctx, m) {
       return;
     }
     // Eşin kartından ödenen ortak harcamada tik = payımı ona gönderdim (ayın 5'ine girmez)
-    if (!was && table === 'expenses' && it.shared && it.split === 'half' && it.payer_id !== uid) {
+    if (!was && table === 'expenses' && owesPayer(it) && it.payer_id !== uid) {
       const payerName = ctx.names[it.payer_id] || 'eşin';
-      if (!confirm(`"${it.name}" harcamasında payın ${tl(Number(it.amount) / 2)}. Kartı ödeyen: ${payerName}.\n\nBu parayı gönderdin mi?\n\nTamam: gönderdim, hesaplaşmaya eklenmez.\nVazgeç: tiklenmez, hesaplaşmada kalır.`)) return;
+      if (!confirm(`"${it.name}" harcamasında payın ${tl(debtOf(it, Number(it.amount)))}. Kartı ödeyen: ${payerName}.\n\nBu parayı gönderdin mi?\n\nTamam: gönderdim, hesaplaşmaya eklenmez.\nVazgeç: tiklenmez, hesaplaşmada kalır.`)) return;
     }
     if (!was) celebrate(pick(['Ödendi!', 'Bir tane daha bitti!', 'Aferin bize!', 'Tıkır tıkır!']));
-    const partnerPaid = table === 'expenses' && it.shared && it.split === 'half' && it.payer_id !== uid;
+    const partnerPaid = table === 'expenses' && owesPayer(it) && it.payer_id !== uid;
     const sentToPartner = !was && partnerPaid;
     actions.patch(table, it.id, {
       paid_months: was
@@ -2208,7 +2219,7 @@ function RecordDetail({ ctx, m, rec, onEdit, onClose }) {
         <div class="row"><span>Tutar</span><b>${tl(amt)}</b></div>
         <div class="row"><span>Hangi karttan / nasıl</span><b>${from}</b></div>
         ${it.shared && html`<div class="row"><span>Kartı ödeyen</span><b>${payerName}</b></div>`}
-        ${it.shared && html`<div class="row"><span>Bölüşüm</span><b>${it.split === 'half' ? 'Yarı yarıya' : 'Tamamı kart sahibine'}</b></div>`}
+        ${it.shared && html`<div class="row"><span>Bölüşüm</span><b>${{ half: 'Yarı yarıya', other: 'Tamamı kartı ödemeyene' }[it.split] || 'Tamamı kart sahibine'}</b></div>`}
         <div class="row"><span>Ne zaman açıldı</span><b>${fmtDate(started)}</b></div>
         ${kind === 'installment' && html`<div class="row"><span>Toplam tutar<small class="muted"> · ${inst.total(it)} × ${tl(it.monthly_amount)}</small></span><b>${tl(Number(it.monthly_amount) * inst.total(it))}</b></div>`}
         ${kind === 'installment' && it.shared && it.split === 'half' && html`<div class="row"><span>Senin payın (toplam)</span><b>${tl(Number(it.monthly_amount) * inst.total(it) / 2)}</b></div>`}
@@ -2386,7 +2397,7 @@ function OzetGroups({ ctx, m, view, focus }) {
 
   return html`<div class="ozet-groups">
     ${g('settle', 'Hesaplaşma', b.settleIn, html`
-      ${(sCur?.lines || []).map(l => html`<div class="row pad" key=${l.id}><span>${l.name}<small class="muted"> · ${lower(l.kind)}, ${paidBy(l.payer)} · payı</small></span><b>${tl(l.amount / 2)}</b></div>`)}
+      ${(sCur?.lines || []).map(l => html`<div class="row pad" key=${l.id}><span>${l.name}<small class="muted"> · ${lower(l.kind)}, ${paidBy(l.payer)} · payı</small></span><b>${tl(l.debt)}</b></div>`)}
       <div class="row pad"><span>${b.settleIn >= 0 ? `Gelecek para (${who(sCur?.from)} → sen)` : `Göndereceğin para (sen → ${who(sCur?.to)})`}</span><b class=${b.settleIn >= 0 ? 'pos' : 'warn'}>${tl(Math.abs(b.settleIn))}</b></div>
       <div class="row pad"><span>Durum</span><b class=${settleDone ? 'pos' : 'warn'}>${settleDone ? (b.settleIn < 0 ? 'Gönderildi ✓' : 'Geldi ✓') : b.settleIn < 0 ? 'Gönderilmedi' : 'Henüz gelmedi'}</b></div>`, 'auto', !sCur?.lines?.length,
       Math.abs(b.settleIn) >= 1 && !settleDone ? (b.settleIn < 0 ? 'ödenmedi' : 'gelmedi') : null)}
