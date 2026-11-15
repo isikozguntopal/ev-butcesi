@@ -60,12 +60,66 @@ Deno.serve(async req => {
   const { data: member } = await admin.from('members').select('household_id, notify_prefs').eq('user_id', uid).maybeSingle();
   if (!member) return json({ error: 'Aile bulunamadı' }, 404);
 
+  // Herkese kendi telefonuna kısa bir "otomasyon çalıştı, şunu yaptım" bildirimi
+  const push = async (title: string, text: string) => {
+    if ((member.notify_prefs ?? {}).bank === false) return;
+    const { data: subs } = await admin.from('push_subscriptions').select('*').eq('user_id', uid);
+    const payload = JSON.stringify({ title, body: text });
+    await Promise.all((subs ?? []).map(async (s: { id: string; endpoint: string; p256dh: string; auth: string }) => {
+      try {
+        await webpush.sendNotification({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, payload);
+      } catch (err) {
+        const code = (err as { statusCode?: number })?.statusCode;
+        if (code === 404 || code === 410) await admin.from('push_subscriptions').delete().eq('id', s.id);
+      }
+    }));
+  };
+
+  // Siri ile alışveriş listesine ekleme: { source: 'shop', text: 'süt, ekmek ve yumurta' }
+  // Siri ile listeden çıkarma: { source: 'shop_del', text: 'sütü ve ekmeği' } ("sütü" → Süt de bulunur)
+  if (body.source === 'shop_del') {
+    const said = String(body.text ?? '').split(/,|\n| ve | ile /i).map(x => x.trim().replace(/[.!?]+$/, '').toLocaleLowerCase('tr'))
+      .map(x => x.replace(/\s+(sil|çıkar|kaldır)$/, '')).filter(Boolean).slice(0, 20);
+    if (!said.length) return json({ ok: false, message: 'Ürün anlaşılamadı' });
+    const { data: open } = await admin.from('shopping_items').select('id, name').eq('household_id', member.household_id).eq('in_list', true).is('owner_id', null);
+    const gone: string[] = [], missing: string[] = [];
+    for (const w of said) {
+      const hit = (open ?? []).find((i: { name: string }) => { const n = i.name.toLocaleLowerCase('tr'); return n === w || (w.startsWith(n) && w.length - n.length <= 3); });
+      if (!hit) { missing.push(w); continue; }
+      await admin.from('shopping_items').update({ in_list: false, checked: false }).eq('id', hit.id);
+      gone.push(hit.name); open!.splice(open!.indexOf(hit), 1);
+    }
+    const msg = [gone.length ? `${gone.join(', ')} listeden çıkarıldı` : '', missing.length ? `Listede bulunamadı: ${missing.join(', ')}` : ''].filter(Boolean).join(' · ');
+    await push('🛒 Alışveriş listesi', msg);
+    return json({ ok: true, message: msg });
+  }
+
+  if (body.source === 'shop') {
+    const names = String(body.text ?? '').split(/,|\n| ve | ile /i).map(x => x.trim().replace(/[.!?]+$/, ''))
+      .filter(Boolean).map(x => x.charAt(0).toLocaleUpperCase('tr') + x.slice(1)).slice(0, 20);
+    if (!names.length) return json({ ok: false, message: 'Ürün anlaşılamadı' });
+    const { data: all } = await admin.from('shopping_items').select('id, name, owner_id').eq('household_id', member.household_id);
+    const low = (x: string) => x.toLocaleLowerCase('tr');
+    for (const n of names) {
+      const hit = (all ?? []).find((i: { name: string; owner_id: string | null }) => !i.owner_id && low(i.name) === low(n));
+      if (hit) await admin.from('shopping_items').update({ in_list: true, checked: false }).eq('id', hit.id);
+      else await admin.from('shopping_items').insert({ household_id: member.household_id, name: n, category: 'Diğer', in_list: true });
+    }
+    const msg = `${names.join(', ')} listeye eklendi`;
+    await push('🛒 Alışveriş listesi', msg);
+    return json({ ok: true, message: msg });
+  }
+
   const parsed = await fromTexts(texts);
   if (body.dry) return json({ ok: true, dry: true, events: parsed });
   // Uygulamada seçili olmayan kaynaktan geleni kaydetme (çift kayıt olmasın)
   const source = body.source ?? 'email';
   const chosen = (member.notify_prefs ?? {}).bank_source;
-  if (chosen !== source) return json({ ok: true, skipped: `Uygulamada ${source === 'sms' ? 'SMS' : 'e-posta'} aktarımı kapalı` });
+  if (chosen !== source) {
+    const skipped = `Uygulamada ${source === 'sms' ? 'SMS' : 'e-posta'} aktarımı kapalı`;
+    await push('🤖 Otomasyon çalıştı', `${skipped}, mesaj kaydedilmedi`);
+    return json({ ok: true, skipped });
+  }
 
   const events = [...(body.events ?? []), ...parsed].filter(e =>
     KINDS.includes(e.kind) && Number.isFinite(Number(e.amount)) && typeof e.msg_id === 'string' && e.msg_id);
@@ -81,13 +135,20 @@ Deno.serve(async req => {
     // Bakiye bilgisi onay beklemez; doğrudan "Bankadaki bakiye" olur
     status: e.kind === 'balance' ? 'added' : 'pending',
   }));
-  if (!rows.length) return json({ ok: true, inserted: 0 });
+  if (!rows.length) {
+    await push('🤖 Otomasyon çalıştı', 'Mesajda banka hareketi ya da bakiye bulunamadı, bir şey yapılmadı');
+    return json({ ok: true, inserted: 0 });
+  }
 
   // Aynı e-posta ikinci kez gelirse yok sayılır (owner_id + msg_id tekil)
   const { data: inserted, error } = await admin.from('bank_events')
     .upsert(rows, { onConflict: 'owner_id,msg_id', ignoreDuplicates: true }).select();
   if (error) return json({ error: error.message }, 500);
   const fresh = inserted ?? [];
+  if (!fresh.length) {
+    await push('🤖 Otomasyon çalıştı', 'Bu mesaj daha önce işlenmişti, tekrar eklenmedi');
+    return json({ ok: true, inserted: 0 });
+  }
 
   // En yeni bakiye bilgisini kaydet
   const balances = fresh.filter(r => r.kind === 'balance').sort((a, b) => (a.occurred_at < b.occurred_at ? 1 : -1));
@@ -115,6 +176,7 @@ Deno.serve(async req => {
   // Günlük özet kontrolü: önceki bakiye + aradaki giriş/çıkışlar özetteki bakiyeyi tutmuyorsa
   // kaçan (otomasyonun yakalamadığı) bir hareket vardır; farkı onaylanacak hareket olarak ekle
   const gaps: Record<string, unknown>[] = [];
+  const okDays: number[] = [];
   for (const d of fresh.filter(r => r.kind === 'balance' && events.find(e => e.msg_id === r.msg_id)?.daily)) {
     const { data: prev } = await admin.from('bank_events').select('amount, created_at').eq('owner_id', uid).eq('kind', 'balance')
       .neq('id', d.id).lt('created_at', d.created_at).order('created_at', { ascending: false }).limit(1).maybeSingle();
@@ -137,7 +199,7 @@ Deno.serve(async req => {
       .reduce((s: number, e: { amount: number }) => s - Number(e.amount), 0);
     // Uygulamadaki hesap bankanın bakiyesini tutuyorsa (fark yok) bildirim de kayıt da gerekmez
     const diff = Math.round((Number(d.amount) - Number(prev.amount) - net - manualNet) * 100) / 100;
-    if (Math.abs(diff) < 1) continue;
+    if (Math.abs(diff) < 1) { okDays.push(Number(d.amount)); continue; }
     gaps.push({
       household_id: member.household_id, owner_id: uid, kind: diff > 0 ? 'in' : 'out', amount: Math.abs(diff),
       merchant: GAP, occurred_at: d.occurred_at, msg_id: d.msg_id.replace(/:balance$/, ':gap'), status: 'pending',
@@ -146,27 +208,25 @@ Deno.serve(async req => {
   }
   if (gaps.length) await admin.from('bank_events').upsert(gaps, { onConflict: 'owner_id,msg_id', ignoreDuplicates: true });
 
-  // Yeni kart harcamalarını ve günlük özetteki farkı telefona bildir (tercihinde kapatmadıysa)
+  // Ne yapıldığını tek bildirimde anlat
   const cards = fresh.filter(r => r.kind === 'card');
-  if ((cards.length || gaps.length) && (member.notify_prefs ?? {}).bank !== false) {
-    const { data: subs } = await admin.from('push_subscriptions').select('*').eq('user_id', uid);
+  const moves = fresh.filter(r => r.kind === 'in' || r.kind === 'out');
+  const lines: string[] = [];
+  let title = '🤖 Otomasyon çalıştı';
+  if (cards.length) {
+    title = '🔔 Yeni kart harcaması';
     const one = cards[0];
-    const payload = JSON.stringify(cards.length ? {
-      title: '🔔 Yeni kart harcaması',
-      body: cards.length === 1 ? `${tl(one.amount)}${one.merchant ? ` · ${one.merchant}` : ''} · uygulamada onayla`
-        : `${cards.length} yeni harcama · uygulamada onayla`,
-    } : {
-      title: '🔎 Bankada kaçan bir hareket var',
-      body: `Günlük özette ${tl(Number(gaps[0].amount))} ${gaps[0].kind === 'in' ? 'giriş' : 'çıkış'} farkı · uygulamada kontrol et`,
-    });
-    await Promise.all((subs ?? []).map(async (s: { id: string; endpoint: string; p256dh: string; auth: string }) => {
-      try {
-        await webpush.sendNotification({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, payload);
-      } catch (err) {
-        const code = (err as { statusCode?: number })?.statusCode;
-        if (code === 404 || code === 410) await admin.from('push_subscriptions').delete().eq('id', s.id);
-      }
-    }));
+    lines.push(cards.length === 1 ? `${tl(one.amount)}${one.merchant ? ` · ${one.merchant}` : ''} · uygulamada onayla` : `${cards.length} yeni harcama · uygulamada onayla`);
   }
+  if (gaps.length) {
+    if (!cards.length) title = '🔎 Bankada kaçan bir hareket var';
+    lines.push(`Günlük özette ${tl(Number(gaps[0].amount))} ${gaps[0].kind === 'in' ? 'giriş' : 'çıkış'} farkı · uygulamada kontrol et`);
+  }
+  for (const m of moves) lines.push(`${tl(Number(m.amount))} ${m.kind === 'in' ? 'giriş' : 'çıkış'}${m.merchant ? ` · ${m.merchant}` : ''} · uygulamada onayla`);
+  for (const a of okDays) lines.push(`Günlük bakiye ${tl(a)} · uygulamayla aynı, fark yok ✓`);
+  if (balances.length && !okDays.length && !gaps.length) lines.push(`Bakiye güncellendi: ${tl(Number(balances[0].amount))}`);
+  if (limits.length) lines.push(`Kart limiti güncellendi: kullanılabilir ${tl(Number(limits[0].lim))}`);
+  if (!lines.length) lines.push('Mesaj kaydedildi');
+  await push(title, lines.join('\n'));
   return json({ ok: true, inserted: fresh.length });
 });

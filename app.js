@@ -3705,7 +3705,21 @@ function BankLinkSettings({ ctx }) {
       · URL: 1. Adres<br />
       · Yöntem: POST · Başlıklar: <b>Authorization</b> = 2. Yetki<br />
       · İstek Gövdesi: JSON → <b>source</b> (Metin) = sms · <b>text</b> (Metin) = Kestirme Girdisi<br />
-      Bankadan SMS gelince kart harcaması uygulamayı açtığında "Yeni harcama belirlendi" olarak sorulur, bakiye Bu Ay ekranında görünür.</div>`}`;
+      Bankadan SMS gelince kart harcaması uygulamayı açtığında "Yeni harcama belirlendi" olarak sorulur, bakiye Bu Ay ekranında görünür.<br />
+      Otomasyon her çalıştığında ne yaptığını bildirimle söyler (bakiye fark yok, yeni harcama, mesaj zaten işlenmişti…).</div>`}
+    ${link && html`
+      <${Group} title="Siri ile alışveriş listesi">
+        <div class="row pad"><span>1. Adres<small class="muted"> · paylaşma</small></span>${btn('su', 'Kopyala', address)}</div>
+        <div class="row pad"><span>2. Yetki (Authorization)</span>${btn('sh', 'Kopyala', `Bearer ${SUPABASE_ANON_KEY}`)}</div>
+      <//>
+      <div class="hint">
+        <b>iPhone'da kurulum (bir kez):</b><br />
+        Kestirmeler → + → adını <b>Listeye ekle</b> koy<br />
+        · Eylem: <b>Metni Dikte Et</b> (Dil: Türkçe)<br />
+        · Eylem: <b>URL'nin İçeriklerini Al</b> → URL: 1. Adres · Yöntem: POST · Başlıklar: <b>Authorization</b> = 2. Yetki<br />
+        · İstek Gövdesi: JSON → <b>source</b> (Metin) = shop · <b>text</b> (Metin) = Dikte Edilen Metin<br />
+        Sonra "Hey Siri, listeye ekle" de, "süt, ekmek ve yumurta" gibi söyle. Ürünler ortak listeye eklenir, sana bildirim gelir.<br />
+        <b>Silmek için:</b> aynı kestirmeyi çoğalt, adını <b>Listeden çıkar</b> yap, source = <b>shop_del</b> olsun. "Hey Siri, listeden çıkar" → "sütü ve ekmeği".</div>`}`;
 }
 
 function QuickAdd({ onTap }) {
