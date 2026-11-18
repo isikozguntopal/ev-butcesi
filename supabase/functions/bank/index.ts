@@ -197,7 +197,7 @@ Deno.serve(async req => {
     const { data: sameMsg } = base ? await admin.from('bank_events').select('amount').eq('owner_id', uid).in('kind', ['in', 'out']).like('msg_id', `${base}:%`) : { data: [] };
     const seen = [...bankMoves, ...(sameMsg ?? [])].map(m => Number(m.amount));
     const manualNet = (manual ?? []).filter((e: { id: string; name: string; on_card: boolean; paid_months: string[] | null }) =>
-      e.on_card !== true && !linkedIds.has(e.id) && !/bakiye eşitleme/.test(e.name || '')
+      e.on_card !== true && !linkedIds.has(e.id)
       && (e.paid_months ?? []).some(k => k.endsWith(`:${uid}`)))
       .filter((e: { amount: number }) => { const i = seen.indexOf(Math.abs(Number(e.amount))); if (i < 0) return true; seen.splice(i, 1); return false; })
       .reduce((s: number, e: { amount: number }) => s - Number(e.amount), 0);

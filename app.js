@@ -730,13 +730,13 @@ function MonthScreen({ ctx }) {
         <div class="hero-top">
           <div class="grow">
             <div class="muted">Bankadaki bakiye</div>
-            <div class=${'big ' + (bank < 0 ? 'neg' : '')}><${CountUp} value=${bank} /></div>
-            <div class="sub">Bankanın son mesajı · ${whenShort(fin.bank_balance_at)}</div>
+            <div class=${'big ' + (bankNow < 0 ? 'neg' : '')}><${CountUp} value=${bankNow} /></div>
+            <div class="sub">Bankanın son mesajı ${whenShort(fin.bank_balance_at)}: ${tl(bank)}${bankNow !== bank ? ' · sonrasındaki hareketler düşüldü' : ''}</div>
           </div>
           ${income > 0 && html`<${Ring} ratio=${b.out / income} label="harcandı" />`}
         </div>
         <div class="rows">
-          <${BankSinceRows} ctx=${ctx} />
+          <${BankSinceRows} ctx=${ctx} hideNow=${true} />
           <button class="row end-row" onClick=${() => setEndOpen(!endOpen)} aria-expanded=${endOpen}>
             <span><span class=${'chev' + (endOpen ? ' open' : '')}>›</span>Ay sonunda kalan</span><b class=${endLeft < 0 ? 'neg' : 'pos'}>${tl(endLeft)}</b></button>
           ${endOpen && html`
@@ -3185,11 +3185,11 @@ function bankSince(rows, fin, uid) {
   const balDay = new Date(at + 3 * 3600_000).toISOString().slice(0, 10);
   const manual = rows.expenses.filter(e => e.payer_id === uid && Number(e.amount) > 0 && !onCardItem(e, 'expenses') && after(e.created_at)
     && !(e.date && e.date < balDay)
-    && !linked.has(e.id) && !/bakiye eşitleme/.test(e.name || '') && isPaid(e, bm(e.date), uid))
+    && !linked.has(e.id) && isPaid(e, bm(e.date), uid))
     .filter(e => { const i = added.indexOf(Number(e.amount)); if (i < 0) return true; added.splice(i, 1); return false; });
   const list = [
     ...ev.map(e => ({ id: e.id, name: e.matched_table === 'maas' || isSalaryEv(e) ? '💼 Maaş' : e.merchant || BANK_KIND[e.kind], at: e.occurred_at, amt: e.kind === 'in' ? Number(e.amount) : -Number(e.amount) })),
-    ...manual.map(e => ({ id: e.id, name: e.name, at: e.created_at, amt: -Number(e.amount) })),
+    ...manual.map(e => ({ id: e.id, name: /bakiye eşitleme/.test(e.name || '') ? '⚖️ Bakiye eşitleme' : e.name, at: e.created_at, amt: -Number(e.amount) })),
   ].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
   return { list, now: Math.round((Number(fin.bank_balance) + sumBy(list, x => x.amt)) * 100) / 100 };
 }
