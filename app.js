@@ -730,17 +730,17 @@ function MonthScreen({ ctx }) {
         <div class="hero-top">
           <div class="grow">
             <div class="muted">Bankadaki bakiye</div>
-            <div class=${'big ' + (bankNow < 0 ? 'neg' : '')}><${CountUp} value=${bankNow} /></div>
-            <div class="sub">Tahmini şu an · son banka bakiyesi ${whenShort(fin.bank_balance_at)}: ${tl(bank)}</div>
+            <div class=${'big ' + (bank < 0 ? 'neg' : '')}><${CountUp} value=${bank} /></div>
+            <div class="sub">Bankanın son mesajı · ${whenShort(fin.bank_balance_at)}</div>
           </div>
           ${income > 0 && html`<${Ring} ratio=${b.out / income} label="harcandı" />`}
         </div>
         <div class="rows">
-          <${BankSinceRows} ctx=${ctx} hideNow=${true} />
+          <${BankSinceRows} ctx=${ctx} />
           <button class="row end-row" onClick=${() => setEndOpen(!endOpen)} aria-expanded=${endOpen}>
             <span><span class=${'chev' + (endOpen ? ' open' : '')}>›</span>Ay sonunda kalan</span><b class=${endLeft < 0 ? 'neg' : 'pos'}>${tl(endLeft)}</b></button>
           ${endOpen && html`
-            <div class="row sub-row"><span>Bankadaki bakiye<small class="muted"> · şu an</small></span><b>${tl(bankNow)}</b></div>
+            <div class="row sub-row"><span>Bankadaki bakiye<small class="muted"> · ${bankNow !== bank ? 'tahmini şu an' : 'son mesaj'}</small></span><b>${tl(bankNow)}</b></div>
             ${b.unpaidList.length > 0 && html`<div class="row head-row"><small class="muted">Henüz ödenmeyenler düşülür</small></div>`}
             ${b.unpaidList.map((x, k) => html`<div class="row sub-row" key=${'u' + k}><span>${x.name}</span><b class="neg">${signed(-x.amt).text}</b></div>
               ${x.card && m === thisMonth() && html`<div class="row sub-row"><button class="link small" onClick=${() => markMinPaid(ctx, m, b.cardMin)}>✓ Bankada ödenmiş görünüyorsa: Asgariyi ödedim</button></div>`}`)}
@@ -806,13 +806,14 @@ function MonthScreen({ ctx }) {
     ${detail && html`<${RecordDetail} ctx=${ctx} m=${m} rec=${detail} onClose=${() => setDetail(null)} onEdit=${() => { setForm({ kind: detail.kind, item: detail.it }); setDetail(null); }} />`}
     ${taksitOpen && html`<${TaksitSheet} ctx=${ctx} onAdd=${() => setForm({ kind: 'installment' })} onClose=${() => setTaksitOpen(false)} />`}
     ${partOpen && html`<${CardPartSheet} ctx=${ctx} onClose=${() => setPartOpen(false)} />`}
-    ${balOpen && html`<${BalanceSheet} ctx=${ctx} expected=${expected} note=${prePay ? 'geçen aydan kalan − bu ay ödenenler; maaş henüz yatmadı' : prevLeft ? 'gelir + geçen aydan kalan − bu ay ödenenler' : 'gelir − bu ay ödenenler'} initial=${bank ?? undefined} onClose=${() => setBalOpen(false)} />`}`;
+    ${balOpen && bankNow != null && html`<${BalanceSheet} ctx=${ctx} expected=${bankNow} bankMsg=${bank} initial=${bankNow} onClose=${() => setBalOpen(false)} />`}
+    ${balOpen && bankNow == null && html`<${BalanceSheet} ctx=${ctx} expected=${expected} note=${prePay ? 'geçen aydan kalan − bu ay ödenenler; maaş henüz yatmadı' : prevLeft ? 'gelir + geçen aydan kalan − bu ay ödenenler' : 'gelir − bu ay ödenenler'} initial=${bank ?? undefined} onClose=${() => setBalOpen(false)} />`}`;
 }
 
 // ---------- Bakiye eşitleme ----------
 
 /** Bankadaki gerçek bakiyeyi girince farkı tek bir "Diğer" harcamasıyla kapatır */
-function BalanceSheet({ ctx, expected, note, initial, onClose }) {
+function BalanceSheet({ ctx, expected, note, initial, bankMsg, onClose }) {
   const { uid, actions } = ctx;
   const [real, setReal] = useState(initial ?? 0);
   const [touched, setTouched] = useState(initial != null);
@@ -833,7 +834,11 @@ function BalanceSheet({ ctx, expected, note, initial, onClose }) {
   return html`
     <${Sheet} title="⚖️ Bakiye eşitle" onClose=${onClose}>
       <div class="card rows">
-        <div class="row"><span>Uygulamaya göre hesabında olması gereken<small class="muted"> (${note})</small></span><b>${tl(expected)}</b></div>
+        ${bankMsg != null ? html`
+          <div class="row"><span>Bankanın son mesajındaki bakiye<small class="muted"> · ${whenShort(ctx.fin.bank_balance_at)}</small></span><b>${tl(bankMsg)}</b></div>
+          <${BankSinceRows} ctx=${ctx} hideNow=${true} />
+          <div class="row"><span><b>Şu an olması gereken</b></span><b>${tl(expected)}</b></div>`
+        : html`<div class="row"><span>Uygulamaya göre hesabında olması gereken<small class="muted"> (${note})</small></span><b>${tl(expected)}</b></div>`}
       </div>
       <div class="card form">
         <label class="field"><span>Bankadaki gerçek bakiye</span><${MoneyInput} value=${real} onInput=${v => { setReal(v); setTouched(true); }} /></label>
@@ -3176,7 +3181,10 @@ function bankSince(rows, fin, uid) {
   // "Harcama olarak eklendi" hareketlerin oluşturduğu kayıt bağlı tutulmuyor: aynı tutarlı elle kayıt bir kez düşülür
   const added = ev.filter(e => e.status === 'added').map(e => Number(e.amount));
   // "Henüz ödenmedi" denen harcama bankadan çıkmadı: ödendi tiklenince düşülür (ay sonu hesabında ayrıca "ödenecek" diye düşülüyor)
+  // Bakiye mesajının gününden önceki tarihli harcama o bakiyeye zaten dahil (ör. sabahki günlük özet dünü kapsar)
+  const balDay = new Date(at + 3 * 3600_000).toISOString().slice(0, 10);
   const manual = rows.expenses.filter(e => e.payer_id === uid && Number(e.amount) > 0 && !onCardItem(e, 'expenses') && after(e.created_at)
+    && !(e.date && e.date < balDay)
     && !linked.has(e.id) && !/bakiye eşitleme/.test(e.name || '') && isPaid(e, bm(e.date), uid))
     .filter(e => { const i = added.indexOf(Number(e.amount)); if (i < 0) return true; added.splice(i, 1); return false; });
   const list = [

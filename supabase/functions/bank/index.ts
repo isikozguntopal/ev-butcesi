@@ -178,7 +178,7 @@ Deno.serve(async req => {
   const gaps: Record<string, unknown>[] = [];
   const okDays: number[] = [];
   for (const d of fresh.filter(r => r.kind === 'balance' && events.find(e => e.msg_id === r.msg_id)?.daily)) {
-    const { data: prev } = await admin.from('bank_events').select('amount, created_at').eq('owner_id', uid).eq('kind', 'balance')
+    const { data: prev } = await admin.from('bank_events').select('amount, created_at, msg_id').eq('owner_id', uid).eq('kind', 'balance')
       .neq('id', d.id).lt('created_at', d.created_at).order('created_at', { ascending: false }).limit(1).maybeSingle();
     if (!prev) continue;
     const { data: moves } = await admin.from('bank_events').select('kind, amount, msg_id').eq('owner_id', uid).in('kind', ['in', 'out'])
@@ -191,7 +191,11 @@ Deno.serve(async req => {
       .eq('payer_id', uid).gt('created_at', prev.created_at).lt('created_at', d.created_at);
     const { data: linked } = await admin.from('bank_events').select('matched_id').eq('owner_id', uid).not('matched_id', 'is', null);
     const linkedIds = new Set((linked ?? []).map((l: { matched_id: string }) => l.matched_id));
-    const seen = bankMoves.map(m => Number(m.amount));
+    // Önceki bakiyeyle aynı mesajdaki hareket ("6.000 TL gönderildi, bakiye …") o bakiyeye dahil; sonradan elle girilen
+    // aynı tutarlı kayıt da o hareketin kendisidir, bir daha düşülmez
+    const base = String(prev.msg_id ?? '').replace(/:balance$/, '');
+    const { data: sameMsg } = base ? await admin.from('bank_events').select('amount').eq('owner_id', uid).in('kind', ['in', 'out']).like('msg_id', `${base}:%`) : { data: [] };
+    const seen = [...bankMoves, ...(sameMsg ?? [])].map(m => Number(m.amount));
     const manualNet = (manual ?? []).filter((e: { id: string; name: string; on_card: boolean; paid_months: string[] | null }) =>
       e.on_card !== true && !linkedIds.has(e.id) && !/bakiye eşitleme/.test(e.name || '')
       && (e.paid_months ?? []).some(k => k.endsWith(`:${uid}`)))
